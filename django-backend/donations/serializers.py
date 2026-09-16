@@ -165,3 +165,56 @@ class DonationCreateSerializer(serializers.ModelSerializer):
             )
 
         return value
+    
+    
+#Owner view GET /my-campaigns/<pk>/donations/
+class OwnerDonationListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Donation
+        fields = [
+            'id',
+            'name',
+            'email',
+            'amount',
+            'is_anonymous',
+            'status',
+            'tx_ref',
+            'created_at',
+        ]
+        read_only_fields = fields
+
+
+#Public view GET /campaigns/<pk>/donations/
+class PublicDonationListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Donation
+        # Deliberately NO email, NO tx_ref, NO status.
+        # Public visitors only see successful donations and never
+        # a donor's contact info or internal payment reference.
+        fields = [
+            'id',
+            'name',
+            'amount',
+            'is_anonymous',
+            'created_at',
+        ]
+        read_only_fields = fields
+        
+#Validate query parameters GET /my-campaigns/<pk>/donations/?status=[valid status]
+class DonationFilterSerializer(serializers.Serializer):
+    status = serializers.CharField(required=False)
+
+    def validate_status(self, value):
+        value = value.upper()
+
+        valid_statuses = {
+            choice[0]
+            for choice in Donation.Status.choices
+        }
+
+        if value not in valid_statuses:
+            raise serializers.ValidationError(
+                "Invalid donation status."
+            )
+
+        return value

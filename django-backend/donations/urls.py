@@ -13,7 +13,10 @@ from .views import (
     
     CreateDonationView,
     PaymentReturnView,
-    ChapaWebhookView
+    ChapaWebhookView,
+    
+    MyCampaignDonationsListView,
+    CampaignPublicDonationsListView
 )
 
 urlpatterns = [
@@ -74,5 +77,17 @@ urlpatterns = [
         'payments/webhook/',
         ChapaWebhookView.as_view(),
         name='chapa-webhook'
+    ),
+    
+    path(
+        'my-campaigns/<int:pk>/donations/',
+        MyCampaignDonationsListView.as_view(),
+        name='my-campaign-donations'
+    ),
+    
+    path(
+        'campaigns/<int:pk>/donations/',
+        CampaignPublicDonationsListView.as_view(),
+        name='campaign-public-donations'
     ),
 ]

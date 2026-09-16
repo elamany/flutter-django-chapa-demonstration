@@ -6,6 +6,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.exceptions import NotFound
 
 from accounts.permissions import IsActiveUser
 
@@ -23,7 +24,11 @@ from .serializers import (
     CampaignDetailSerializer,
     AdminCampaignStatusSerializer,
     DonationCreateSerializer,
+    OwnerDonationListSerializer,   
+    PublicDonationListSerializer,   
+    DonationFilterSerializer,
 )
+
 from .services.chapa import ChapaPaymentService
 
 
@@ -669,4 +674,80 @@ class ChapaWebhookView(APIView):
                 'tx_ref': donation.tx_ref,
                 'chapa_status': chapa_status,
             },
+        )
+        
+class DonationPagination(PageNumberPagination):
+    page_size = 20
+
+
+class MyCampaignDonationsListView(generics.ListAPIView):
+    serializer_class = OwnerDonationListSerializer
+    permission_classes = [IsActiveUser]
+    pagination_class = DonationPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        
+        # Admin/staff can access any campaign and see all statuses
+        if user.is_staff or user.is_superuser:
+            campaign = Campaign.objects.filter(pk=self.kwargs['pk']).first()
+            base_status_filter = None  # no forced filter for admin
+        else:
+            campaign = Campaign.objects.filter(
+                pk=self.kwargs['pk'],
+                owner=user,
+            ).first()
+            base_status_filter = Donation.Status.SUCCESS
+        
+        if campaign is None:
+            raise NotFound('Campaign not found.')
+        
+        queryset = Donation.objects.filter(campaign=campaign).order_by('-created_at')
+        
+        # Owner: force SUCCESS
+        if base_status_filter:
+            queryset = queryset.filter(status=base_status_filter)
+        
+        # Admin/owner can optionally filter by status (admin only for owner it's already forced)
+        params = DonationFilterSerializer(data=self.request.query_params)
+        params.is_valid(raise_exception=True)
+        status_filter = params.validated_data.get('status')
+        if status_filter:
+            # If not admin and status requested isn't SUCCESS, reject?
+            queryset = queryset.filter(status=status_filter)
+        
+        return queryset
+    
+class CampaignPublicDonationsListView(generics.ListAPIView):
+    """Public list of SUCCESSFUL donations for a campaign.
+
+    Mirrors the GoFundMe-style donor wall: anyone can see who gave and
+    how much, but only completed donations. Pending and failed payments
+    are never exposed.
+    """
+    serializer_class = PublicDonationListSerializer
+    permission_classes = []          
+    authentication_classes = []  # don't even try to authenticate
+    pagination_class = DonationPagination
+
+    def get_queryset(self):
+        # Only publicly visible campaigns
+        campaign = Campaign.objects.filter(
+            pk=self.kwargs['pk'],
+            status__in=[
+                Campaign.Status.ACTIVE,
+                Campaign.Status.COMPLETED,
+            ],
+        ).first()
+
+        if campaign is None:
+            raise NotFound('Campaign not found.')
+
+        return (
+            Donation.objects
+            .filter(
+                campaign=campaign,
+                status=Donation.Status.SUCCESS,  
+            )
+            .order_by('-created_at')
         )
