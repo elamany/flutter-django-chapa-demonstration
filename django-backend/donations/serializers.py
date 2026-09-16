@@ -2,6 +2,17 @@ from rest_framework import serializers
 
 from .models import Campaign, Donation
 from .image_utils import process_image
+from decimal import Decimal
+
+
+def _progress_percent(campaign):
+    target = campaign.target_amount or Decimal('0.00')
+    if not target:
+        return 0.0
+    raised = getattr(campaign, 'raised_amount', None) or Decimal('0.00')
+    percent = float(raised / target * 100)
+    return round(min(percent, 100.0), 2)
+
 
 #POST /campaigns/, PATCH /my-campaigns/<id>/
 class CampaignSerializer(serializers.ModelSerializer):
@@ -33,20 +44,17 @@ class CampaignSerializer(serializers.ModelSerializer):
 
 #Small list response GET /campaigns/, GET /my-campaigns/
 class CampaignListSerializer(serializers.ModelSerializer):
-    owner_id = serializers.IntegerField(
-        source='owner.id',
-        read_only=True
-    )
+    owner_id = serializers.IntegerField(source='owner.id', read_only=True)
+    owner_first_name = serializers.CharField(source='owner.first_name', read_only=True)
+    owner_last_name = serializers.CharField(source='owner.last_name', read_only=True)
 
-    owner_first_name = serializers.CharField(
-        source='owner.first_name',
-        read_only=True
+    raised_amount = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
     )
-
-    owner_last_name = serializers.CharField(
-        source='owner.last_name',
-        read_only=True
-    )
+    donation_count = serializers.IntegerField(read_only=True)
+    progress_percent = serializers.SerializerMethodField()
 
     class Meta:
         model = Campaign
@@ -56,11 +64,18 @@ class CampaignListSerializer(serializers.ModelSerializer):
             'created_at',
             'image',
             'status',
+            'target_amount',
+            'raised_amount',
+            'donation_count',
+            'progress_percent',
             'owner_id',
             'owner_first_name',
             'owner_last_name',
         ]
         read_only_fields = fields
+
+    def get_progress_percent(self, campaign):
+        return _progress_percent(campaign)
 
 #Full detail response GET /campaigns/<id>/, GET /my-campaigns/<id>/
 class CampaignDetailSerializer(serializers.ModelSerializer):
@@ -81,6 +96,14 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
         read_only=True
     )
 
+    raised_amount = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+    )
+    donation_count = serializers.IntegerField(read_only=True)
+    progress_percent = serializers.SerializerMethodField()
+
     class Meta:
         model = Campaign
         fields = [
@@ -96,8 +119,14 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
             'owner_username',
             'owner_first_name',
             'owner_last_name',
+            'raised_amount',
+            'donation_count',
+            'progress_percent',
         ]
         read_only_fields = fields
+
+    def get_progress_percent(self, campaign):
+        return _progress_percent(campaign)
 
 #Validate query parameters GET /campaigns/?status=[valid stats]
 class CampaignFilterSerializer(serializers.Serializer):

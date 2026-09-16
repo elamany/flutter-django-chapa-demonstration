@@ -2,7 +2,31 @@ from django.db import models
 from decimal import Decimal
 from django.core.validators import MinValueValidator
 from django.contrib.auth.models import User
-# Create your models here.
+from django.db.models import Sum, Count, DecimalField, Value, Q
+from django.db.models.functions import Coalesce
+
+
+class CampaignQuerySet(models.QuerySet):
+    """QuerySet for Campaign with donation totals annotated in."""
+
+    def with_donation_totals(self):
+        """Annotate raised_amount and donation_count from SUCCESS donations.
+        - raised_amount: sum of successful donations, 0.00 if none
+        - donation_count: number of successful donations
+        """
+        success_filter = Q(donations__status=Donation.Status.SUCCESS)
+
+        return self.annotate(
+            raised_amount=Coalesce(
+                Sum('donations__amount', filter=success_filter),
+                Value(Decimal('0.00')),
+                output_field=DecimalField(
+                    max_digits=12,
+                    decimal_places=2,
+                ),
+            ),
+            donation_count=Count('donations', filter=success_filter),
+        )
 
 class Campaign(models.Model):
     class Status(models.TextChoices):
@@ -11,6 +35,7 @@ class Campaign(models.Model):
         ACTIVE = 'ACTIVE', 'Active'
         COMPLETED = 'COMPLETED', 'Completed'
         REJECTED = 'REJECTED', 'Rejected'
+    objects = CampaignQuerySet.as_manager()
     owner = models.ForeignKey(
         User,
         on_delete=models.CASCADE,

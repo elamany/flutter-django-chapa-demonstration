@@ -264,7 +264,7 @@ class CampaignListView(generics.ListCreateAPIView):
         if status_filter:
             queryset = queryset.filter(status=status_filter)
 
-        return queryset
+        return queryset.with_donation_totals() 
 
 class CampaignDetailView(generics.RetrieveAPIView):
     serializer_class = CampaignDetailSerializer
@@ -275,7 +275,7 @@ class CampaignDetailView(generics.RetrieveAPIView):
                 Campaign.Status.ACTIVE,
                 Campaign.Status.COMPLETED,
             ]
-        )
+        ).with_donation_totals()
 
 class MyCampaignListView(generics.ListAPIView):
     serializer_class = CampaignListSerializer
@@ -283,9 +283,12 @@ class MyCampaignListView(generics.ListAPIView):
     permission_classes = [IsActiveUser]
 
     def get_queryset(self):
-        return Campaign.objects.filter(
-            owner=self.request.user
-        ).order_by('-created_at')
+        return (
+            Campaign.objects
+            .filter(owner=self.request.user)
+            .with_donation_totals()
+            .order_by('-created_at')
+        )
 
 class MyCampaignDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsActiveUser]
@@ -296,7 +299,11 @@ class MyCampaignDetailView(generics.RetrieveUpdateDestroyAPIView):
         return CampaignDetailSerializer
 
     def get_queryset(self):
-        return Campaign.objects.filter(owner=self.request.user)
+        return (
+            Campaign.objects
+            .filter(owner=self.request.user)
+            .with_donation_totals()
+        )
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -369,6 +376,13 @@ class CampaignStatusActionView(APIView):
         campaign.status = self.to_status
         campaign.save(update_fields=['status', 'updated_at'])
 
+        # Re-fetch with totals so the serializer has the annotations.
+        campaign = (
+            Campaign.objects
+            .with_donation_totals()
+            .get(pk=campaign.pk)
+        )
+
         return success_response(
             data=CampaignDetailSerializer(campaign).data
         )
@@ -422,6 +436,13 @@ class AdminCampaignStatusUpdateView(APIView):
 
         campaign.status = new_status
         campaign.save(update_fields=['status', 'updated_at'])
+
+        # Re-fetch with totals for serialization.
+        campaign = (
+            Campaign.objects
+            .with_donation_totals()
+            .get(pk=campaign.pk)
+        )
 
         return success_response(
             data=CampaignDetailSerializer(campaign).data
@@ -679,42 +700,55 @@ class DonationPagination(PageNumberPagination):
     page_size = 20
 
 class MyCampaignDonationsListView(generics.ListAPIView):
+    """Donations for one campaign.
+
+    - Owner:    only their own campaign, only SUCCESS donations.
+                ?status= may only be SUCCESS (or omitted).
+    - Admin:    any campaign, all statuses, ?status= freely filterable.
+    """
     serializer_class = OwnerDonationListSerializer
     permission_classes = [IsActiveUser]
     pagination_class = DonationPagination
 
     def get_queryset(self):
         user = self.request.user
-        
-        # Admin/staff can access any campaign and see all statuses
-        if user.is_staff or user.is_superuser:
-            campaign = Campaign.objects.filter(pk=self.kwargs['pk']).first()
-            base_status_filter = None  # no forced filter for admin
+        is_admin = user.is_staff or user.is_superuser
+
+        if is_admin:
+            campaign = Campaign.objects.filter(
+                pk=self.kwargs['pk']
+            ).first()
         else:
             campaign = Campaign.objects.filter(
                 pk=self.kwargs['pk'],
                 owner=user,
             ).first()
-            base_status_filter = Donation.Status.SUCCESS
-        
+
         if campaign is None:
             raise NotFound('Campaign not found.')
-        
-        queryset = Donation.objects.filter(campaign=campaign).order_by('-created_at')
-        
-        # Owner: force SUCCESS
-        if base_status_filter:
-            queryset = queryset.filter(status=base_status_filter)
-        
-        # Admin/owner can optionally filter by status (admin only for owner it's already forced)
-        params = DonationFilterSerializer(data=self.request.query_params)
+
+        queryset = (
+            Donation.objects
+            .filter(campaign=campaign)
+            .order_by('-created_at')
+        )
+
+        params = DonationFilterSerializer(
+            data=self.request.query_params
+        )
         params.is_valid(raise_exception=True)
         status_filter = params.validated_data.get('status')
-        if status_filter:
-            # If not admin and status requested isn't SUCCESS, reject?
-            queryset = queryset.filter(status=status_filter)
-        
-        return queryset
+
+        if is_admin:
+            if status_filter:
+                queryset = queryset.filter(status=status_filter)
+            return queryset
+
+        if status_filter and status_filter != Donation.Status.SUCCESS:
+            raise PermissionDenied(
+                'Owners can only view successful donations.'
+            )
+        return queryset.filter(status=Donation.Status.SUCCESS)
 
 class CampaignPublicDonationsListView(generics.ListAPIView):
     """Public list of SUCCESSFUL donations for a campaign.
