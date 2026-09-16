@@ -1,6 +1,12 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
+from rest_framework_simplejwt.token_blacklist.models import (
+    OutstandingToken,
+    BlacklistedToken,
+)
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.exceptions import TokenError
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(
@@ -105,6 +111,26 @@ class ChangePasswordSerializer(serializers.Serializer):
 
     def save(self, **kwargs):
         user = self.context['request'].user
+
         user.set_password(self.validated_data['new_password'])
         user.save(update_fields=['password'])
+
+        # Blacklist every outstanding refresh token for this user.
+        for token in OutstandingToken.objects.filter(user=user):
+            BlacklistedToken.objects.get_or_create(token=token)
+
         return user
+    
+class LogoutSerializer(serializers.Serializer):
+    refresh = serializers.CharField()
+
+    def validate_refresh(self, value):
+        try:
+            self.token = RefreshToken(value)
+        except TokenError:
+            raise serializers.ValidationError('Invalid or expired token.')
+        return value
+
+    def save(self, **kwargs):
+        self.token.blacklist()
+        return None
