@@ -678,7 +678,6 @@ class ChapaWebhookView(APIView):
 class DonationPagination(PageNumberPagination):
     page_size = 20
 
-
 class MyCampaignDonationsListView(generics.ListAPIView):
     serializer_class = OwnerDonationListSerializer
     permission_classes = [IsActiveUser]
@@ -716,57 +715,35 @@ class MyCampaignDonationsListView(generics.ListAPIView):
             queryset = queryset.filter(status=status_filter)
         
         return queryset
-    
-class MyCampaignDonationsListView(generics.ListAPIView):
-    """Donations for one campaign.
-    - Owner:    only their own campaign, only SUCCESS donations.
-                ?status= may only be SUCCESS (or omitted).
-    - Admin:    any campaign, all statuses, ?status= freely filterable.
+
+class CampaignPublicDonationsListView(generics.ListAPIView):
+    """Public list of SUCCESSFUL donations for a campaign.
+    anyone can see who gave and how much, but only completed/success donations. Pending and failed payments
+    are never exposed.
     """
-    serializer_class = OwnerDonationListSerializer
-    permission_classes = [IsActiveUser]
+    serializer_class = PublicDonationListSerializer
+    permission_classes = []
+    authentication_classes = []  # don't even try to authenticate
     pagination_class = DonationPagination
 
     def get_queryset(self):
-        user = self.request.user
-        is_admin = user.is_staff or user.is_superuser
-
-        # Locate the campaign according to who's asking.
-        if is_admin:
-            campaign = Campaign.objects.filter(
-                pk=self.kwargs['pk']
-            ).first()
-        else:
-            campaign = Campaign.objects.filter(
-                pk=self.kwargs['pk'],
-                owner=user,
-            ).first()
+        # Only publicly visible campaigns
+        campaign = Campaign.objects.filter(
+            pk=self.kwargs['pk'],
+            status__in=[
+                Campaign.Status.ACTIVE,
+                Campaign.Status.COMPLETED,
+            ],
+        ).first()
 
         if campaign is None:
-            # Don't leak existence of another owner's campaign.
             raise NotFound('Campaign not found.')
 
-        queryset = (
+        return (
             Donation.objects
-            .filter(campaign=campaign)
+            .filter(
+                campaign=campaign,
+                status=Donation.Status.SUCCESS,
+            )
             .order_by('-created_at')
         )
-
-        params = DonationFilterSerializer(
-            data=self.request.query_params
-        )
-        params.is_valid(raise_exception=True)
-        status_filter = params.validated_data.get('status')
-
-        if is_admin:
-            # Admin: free to filter, or see everything.
-            if status_filter:
-                queryset = queryset.filter(status=status_filter)
-            return queryset
-
-        # Owner: only SUCCESS is visible.
-        if status_filter and status_filter != Donation.Status.SUCCESS:
-            raise PermissionDenied(
-                'Owners can only view successful donations.'
-            )
-        return queryset.filter(status=Donation.Status.SUCCESS)
