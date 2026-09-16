@@ -36,3 +36,35 @@ class JWTAuthenticationAllowInactive(JWTAuthentication):
         # Deliberately skip api_settings.USER_AUTHENTICATION_RULE(user)
         # so an inactive user still authenticates on this endpoint.
         return user
+    
+class ActiveOnlyJWTAuthentication(JWTAuthentication):
+    """Global auth class.
+    Same as JWTAuthentication but with a friendlier message for
+    inactive users. Used as DEFAULT_AUTHENTICATION_CLASSES.
+    """
+
+    def get_user(self, validated_token):
+        try:
+            user_id = validated_token[api_settings.USER_ID_CLAIM]
+        except KeyError:
+            raise InvalidToken(
+                _('Token contained no recognizable user identification')
+            )
+
+        try:
+            user = self.user_model.objects.get(
+                **{api_settings.USER_ID_FIELD: user_id}
+            )
+        except self.user_model.DoesNotExist:
+            raise AuthenticationFailed(
+                _('User not found'),
+                code='user_not_found',
+            )
+
+        if not user.is_active:
+            raise AuthenticationFailed(
+                _('Your account has been deactivated. Please contact support.'),
+                code='user_inactive',
+            )
+
+        return user
