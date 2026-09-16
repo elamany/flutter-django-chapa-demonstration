@@ -24,7 +24,7 @@ class Campaign(models.Model):
         choices=Status.choices,
         default=Status.DRAFT
     )
-    image = models.ImageField(upload_to='campaigns/', blank=True, null=True)
+    image = models.ImageField(upload_to='campaign_image/', blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
