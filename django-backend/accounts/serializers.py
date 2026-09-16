@@ -81,8 +81,6 @@ class UpdateProfileSerializer(serializers.ModelSerializer):
 
 
 class ChangePasswordSerializer(serializers.Serializer):
-    """POST /auth/change-password/ — requires old password."""
-
     old_password = serializers.CharField(write_only=True)
     new_password = serializers.CharField(write_only=True, min_length=8)
     new_password_confirm = serializers.CharField(write_only=True, min_length=8)
@@ -100,9 +98,6 @@ class ChangePasswordSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'new_password_confirm': 'Passwords do not match.'
             })
-
-        # Run Django's built-in password validators
-        # (length, common password, numeric-only, similarity to username).
         validate_password(
             attrs['new_password'],
             self.context['request'].user,
@@ -115,10 +110,16 @@ class ChangePasswordSerializer(serializers.Serializer):
         user.set_password(self.validated_data['new_password'])
         user.save(update_fields=['password'])
 
-        # Blacklist every outstanding refresh token for this user.
+        #  Kill every existing refresh token (other devices).
         for token in OutstandingToken.objects.filter(user=user):
             BlacklistedToken.objects.get_or_create(token=token)
 
+        # Issue a fresh pair for THIS device so the user stays logged in.
+        new_refresh = RefreshToken.for_user(user)
+        self.new_tokens = {
+            'access': str(new_refresh.access_token),
+            'refresh': str(new_refresh),
+        }
         return user
     
 class LogoutSerializer(serializers.Serializer):

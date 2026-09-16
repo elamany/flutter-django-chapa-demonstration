@@ -69,6 +69,10 @@ class ChangePasswordView(APIView):
             {
                 'success': True,
                 'message': 'Password changed successfully.',
+                'data': {
+                    'access': serializer.new_tokens['access'],
+                    'refresh': serializer.new_tokens['refresh'],
+                },
             },
             status=status.HTTP_200_OK,
         )
