@@ -26,7 +26,7 @@ class ChapaPaymentService:
             email=email,
             first_name=first_name,
             last_name=last_name,
-            callback_url=return_url,
+            return_url=return_url,
             customization=customization
         )
 

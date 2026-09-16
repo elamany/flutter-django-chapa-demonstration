@@ -55,12 +55,13 @@ def donation_payload(donation, **extra):
     return data
 
 
-# Shared lookup / verification helpers
+# Campaign helpers
 def get_user_campaign_or_404(pk, user):
     try:
         return Campaign.objects.get(pk=pk, owner=user)
     except Campaign.DoesNotExist:
         return None
+
 
 def campaign_not_found():
     return error_response(
@@ -68,18 +69,66 @@ def campaign_not_found():
         status.HTTP_404_NOT_FOUND,
     )
 
+
+# Payment helpers
+def find_donation_by_tx_ref(tx_ref):
+    return (
+        Donation.objects
+        .select_related('campaign')
+        .filter(tx_ref=tx_ref)
+        .first()
+    )
+
+
 def verify_with_chapa(tx_ref):
-    """Returns (verification_response, error_response_or_None)."""
+    """Verify a payment with Chapa.
+    Returns (verification_dict, error_response_or_None).
+    """
     try:
         verification = ChapaPaymentService().verify_payment(tx_ref)
-    except Exception as error:
-        #print('CHAPA VERIFICATION ERROR:', error)
+    except Exception:
         return None, error_response(
             'Unable to verify payment with the payment provider.',
             status.HTTP_502_BAD_GATEWAY,
         )
-    #print('CHAPA VERIFICATION:', verification)
     return verification, None
+
+
+def validate_chapa_payload(verification, donation):
+    """Validate the Chapa verification result against our donation.
+    Returns (chapa_data, error_response_or_None).
+    """
+    chapa_data = verification.get('data', {})
+
+    if chapa_data.get('tx_ref') != donation.tx_ref:
+        return None, error_response(
+            'Transaction reference mismatch.',
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    if chapa_data.get('currency') != 'ETB':
+        return None, error_response(
+            'Currency mismatch.',
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        amounts_match = (
+            Decimal(str(chapa_data.get('amount'))) == donation.amount
+        )
+    except (TypeError, ValueError, InvalidOperation):
+        return None, error_response(
+            'Invalid payment amount.',
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not amounts_match:
+        return None, error_response(
+            'Donation amount mismatch.',
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    return chapa_data, None
 
 
 def finalize_donation(donation, target_status):
@@ -109,9 +158,74 @@ def finalize_donation(donation, target_status):
         return locked, True
 
 
+# Outcome constants used by settle_donation()
+OUTCOME_SUCCESS = 'success'
+OUTCOME_ALREADY_SUCCESS = 'already_success'
+OUTCOME_FAILED = 'failed'
+OUTCOME_ALREADY_FAILED = 'already_failed'
+OUTCOME_UNEXPECTED = 'unexpected'
+
+def settle_donation(donation, chapa_status):
+    """Transition a donation based on a verified Chapa payment status.
+    Returns (donation, outcome), where outcome is one of the OUTCOME_*
+    constants above.
+    """
+    if chapa_status == 'success':
+        donation, changed = finalize_donation(
+            donation, Donation.Status.SUCCESS
+        )
+        return donation, (
+            OUTCOME_SUCCESS if changed else OUTCOME_ALREADY_SUCCESS
+        )
+
+    if chapa_status == 'failed':
+        donation, changed = finalize_donation(
+            donation, Donation.Status.FAILED
+        )
+        if changed:
+            return donation, OUTCOME_FAILED
+        if donation.status == Donation.Status.FAILED:
+            return donation, OUTCOME_ALREADY_FAILED
+        # Donation is already SUCCESS - never downgrade a paid donation.
+        return donation, OUTCOME_ALREADY_SUCCESS
+
+    return donation, OUTCOME_UNEXPECTED
+
+def process_payment_verification(donation):
+    """Run verify -> validate -> settle for a donation.
+    Returns a dict:
+      {
+        'donation': Donation,
+        'chapa_data': dict,
+        'chapa_status': str,
+        'outcome': str,
+        'error_response': Response | None,
+      }
+    """
+    verification, error = verify_with_chapa(donation.tx_ref)
+    if error:
+        return {'error_response': error}
+
+    chapa_data, error = validate_chapa_payload(verification, donation)
+    if error:
+        return {'error_response': error}
+
+    chapa_status = chapa_data.get('status')
+    donation, outcome = settle_donation(donation, chapa_status)
+
+    return {
+        'donation': donation,
+        'chapa_data': chapa_data,
+        'chapa_status': chapa_status,
+        'outcome': outcome,
+        'error_response': None,
+    }
+
+
 # Campaigns
 class CampaignPagination(PageNumberPagination):
     page_size = 10
+
 
 class CampaignListView(generics.ListCreateAPIView):
     pagination_class = CampaignPagination
@@ -178,9 +292,7 @@ class MyCampaignDetailView(generics.RetrieveUpdateDestroyAPIView):
         return CampaignDetailSerializer
 
     def get_queryset(self):
-        return Campaign.objects.filter(
-            owner=self.request.user
-        )
+        return Campaign.objects.filter(owner=self.request.user)
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -230,8 +342,8 @@ class MyCampaignDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 class CampaignStatusActionView(APIView):
     """Generic owner-side campaign status transition.
+
     Subclasses set from_status / to_status / deny_message.
-    Kept as separate view classes below so existing URL names still work.
     """
     permission_classes = [IsActiveUser]
 
@@ -261,6 +373,7 @@ class SubmitCampaignForReviewView(CampaignStatusActionView):
     from_status = Campaign.Status.DRAFT
     to_status = Campaign.Status.PENDING_REVIEW
     deny_message = 'Only draft campaigns can be submitted for review.'
+
 
 class CancelCampaignSubmissionView(CampaignStatusActionView):
     from_status = Campaign.Status.PENDING_REVIEW
@@ -310,7 +423,7 @@ class AdminCampaignStatusUpdateView(APIView):
             data=CampaignDetailSerializer(campaign).data
         )
 
-# Donations Payments
+# Donations / Payments
 class CreateDonationView(APIView):
     def post(self, request, pk):
         try:
@@ -394,48 +507,39 @@ class PaymentReturnView(APIView):
                 status.HTTP_400_BAD_REQUEST,
             )
 
-        donation = (
-            Donation.objects
-            .select_related('campaign')
-            .filter(tx_ref=tx_ref)
-            .first()
-        )
+        donation = find_donation_by_tx_ref(tx_ref)
         if donation is None:
             return error_response(
                 'Donation not found.',
                 status.HTTP_404_NOT_FOUND,
             )
 
-        # If already successful, don't verify again
+        # Already verified - don't call Chapa again.
         if donation.status == Donation.Status.SUCCESS:
             return success_response(
                 message='Payment has already been verified.',
                 data=donation_payload(donation),
             )
 
-        verification, error = verify_with_chapa(donation.tx_ref)
-        if error:
-            return error
+        result = process_payment_verification(donation)
+        if result['error_response'] is not None:
+            return result['error_response']
 
-        chapa_data = verification.get('data', {})
-        chapa_status = chapa_data.get('status')
+        donation = result['donation']
+        chapa_data = result['chapa_data']
+        outcome = result['outcome']
 
-        if chapa_status == 'success':
-            donation.status = Donation.Status.SUCCESS
-            donation.save(update_fields=['status'])
+        if outcome in (OUTCOME_SUCCESS, OUTCOME_ALREADY_SUCCESS):
             return success_response(
                 message='Payment verified successfully.',
                 data=donation_payload(
                     donation,
                     amount=chapa_data.get('amount'),
                     currency=chapa_data.get('currency'),
-                    verification=verification,
                 ),
             )
 
-        if chapa_status == 'failed':
-            donation.status = Donation.Status.FAILED
-            donation.save(update_fields=['status'])
+        if outcome in (OUTCOME_FAILED, OUTCOME_ALREADY_FAILED):
             return error_response(
                 'Payment failed.',
                 status.HTTP_200_OK,
@@ -445,7 +549,10 @@ class PaymentReturnView(APIView):
         return error_response(
             'Payment verification returned an unexpected status.',
             status.HTTP_502_BAD_GATEWAY,
-            data=donation_payload(donation, chapa_status=chapa_status),
+            data=donation_payload(
+                donation,
+                chapa_status=result['chapa_status'],
+            ),
         )
 
 # Chapa webhook
@@ -479,14 +586,14 @@ class ChapaWebhookView(APIView):
     def post(self, request):
         raw_body = request.body
 
-        # Verify webhook signature
+        #  Verify webhook signature
         if not chapa_signature_valid(raw_body, request.headers):
             return error_response(
                 'Invalid webhook signature.',
                 status.HTTP_401_UNAUTHORIZED,
             )
 
-        # Parse payload
+        #  Parse payload
         try:
             payload = json.loads(raw_body.decode('utf-8'))
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -497,7 +604,7 @@ class ChapaWebhookView(APIView):
 
         print('CHAPA WEBHOOK:', payload)
 
-        # Find our donation
+        # Locate our donation
         tx_ref = payload.get('tx_ref')
         if not tx_ref:
             return error_response(
@@ -505,94 +612,51 @@ class ChapaWebhookView(APIView):
                 status.HTTP_400_BAD_REQUEST,
             )
 
-        donation = (
-            Donation.objects
-            .select_related('campaign')
-            .filter(tx_ref=tx_ref)
-            .first()
-        )
+        donation = find_donation_by_tx_ref(tx_ref)
         if donation is None:
             return error_response(
                 'Donation not found.',
                 status.HTTP_404_NOT_FOUND,
             )
 
-        #  Verify directly with Chapa (never trust the webhook alone)
-        verification, error = verify_with_chapa(donation.tx_ref)
-        if error:
-            return error
+        # Verify + validate + settle (never trust the webhook alone)
+        result = process_payment_verification(donation)
+        if result['error_response'] is not None:
+            return result['error_response']
 
-        #Extract verified Chapa data
-        chapa_data = verification.get('data', {})
-        chapa_status = chapa_data.get('status')
-        chapa_amount = chapa_data.get('amount')
-        chapa_currency = chapa_data.get('currency')
+        donation = result['donation']
+        chapa_data = result['chapa_data']
+        chapa_status = result['chapa_status']
+        outcome = result['outcome']
 
-        # Sanity checks: reference, currency, amount
-        if chapa_data.get('tx_ref') != donation.tx_ref:
-            return error_response(
-                'Transaction reference mismatch.',
-                status.HTTP_400_BAD_REQUEST,
-            )
-
-        if chapa_currency != 'ETB':
-            return error_response(
-                'Currency mismatch.',
-                status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            amounts_match = Decimal(str(chapa_amount)) == donation.amount
-        except (TypeError, ValueError, InvalidOperation):
-            return error_response(
-                'Invalid payment amount.',
-                status.HTTP_400_BAD_REQUEST,
-            )
-
-        if not amounts_match:
-            return error_response(
-                'Donation amount mismatch.',
-                status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Payment succeeded
-        if (
-            verification.get('status') == 'success'
-            and chapa_status == 'success'
-        ):
-            donation, changed = finalize_donation(
-                donation, Donation.Status.SUCCESS
-            )
+        if outcome in (OUTCOME_SUCCESS, OUTCOME_ALREADY_SUCCESS):
             message = (
                 'Webhook payment processed successfully.'
-                if changed
+                if outcome == OUTCOME_SUCCESS
                 else 'Donation already processed.'
             )
             return success_response(
                 message=message,
-                data=donation_payload(donation, currency=chapa_currency),
+                data=donation_payload(
+                    donation,
+                    currency=chapa_data.get('currency'),
+                ),
             )
 
-        # Payment failed
-        if chapa_status == 'failed':
-            donation, changed = finalize_donation(
-                donation, Donation.Status.FAILED
+        if outcome == OUTCOME_FAILED:
+            return error_response(
+                'Payment failed.',
+                status.HTTP_200_OK,
+                data=donation_payload(
+                    donation,
+                    currency=chapa_data.get('currency'),
+                ),
             )
-            if changed:
-                return error_response(
-                    'Payment failed.',
-                    status.HTTP_200_OK,
-                    data=donation_payload(donation, currency=chapa_currency),
-                )
-            if donation.status == Donation.Status.FAILED:
-                return error_response(
-                    'Donation already marked as failed.',
-                    status.HTTP_200_OK,
-                    data=donation_payload(donation),
-                )
-            # Was already SUCCESS - keep the success state
-            return success_response(
-                message='Donation already processed.',
+
+        if outcome == OUTCOME_ALREADY_FAILED:
+            return error_response(
+                'Donation already marked as failed.',
+                status.HTTP_200_OK,
                 data=donation_payload(donation),
             )
 
@@ -606,4 +670,3 @@ class ChapaWebhookView(APIView):
                 'chapa_status': chapa_status,
             },
         )
-        
