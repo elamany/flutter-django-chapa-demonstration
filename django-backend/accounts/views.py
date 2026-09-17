@@ -19,8 +19,7 @@ class RegisterView(generics.CreateAPIView):
 
 class MeView(generics.RetrieveUpdateAPIView):
     """GET returns the current user. PATCH edits profile fields.
-
-    GET works for inactive users (so Flutter can tell them why they
+    GET works for inactive users (so Frontend can tell them why they
     can't log in). PATCH is blocked for inactive users.
     """
 
