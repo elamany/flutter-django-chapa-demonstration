@@ -41,7 +41,9 @@ class _MainScaffoldState extends State<MainScaffold> {
   Widget _buildPage(int index) {
     switch (index) {
       case 0:
-        return const HomeScreen();
+        return HomeScreen(
+          onProfileTap: () => _onTabTapped(2),
+        );
       case 1:
         return const MyCampaignsScreen();
       case 2:

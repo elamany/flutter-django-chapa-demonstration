@@ -3,7 +3,7 @@ import 'package:dio/dio.dart';
 import '../../../../core/api/api_exception.dart';
 import '../../../../core/api/dio_client.dart';
 import '../../../../core/api/paginated_result.dart';
-import '../../../auth/data/models/campaign.dart';
+import '../models/campaign.dart';
 
 /// All campaign-related HTTP calls.
 ///
