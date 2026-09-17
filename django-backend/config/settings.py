@@ -54,7 +54,8 @@ DEBUG = True
 ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
-    'employed-tested-finance-bouquet.trycloudflare.com'
+    'scenes-slope-paris-select.trycloudflare.com',
+    '10.0.2.2'
 ]
 
 

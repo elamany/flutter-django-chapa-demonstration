@@ -8,14 +8,15 @@ import 'auth_event.dart';
 import 'auth_state.dart';
 
 class AuthBloc extends Bloc<AuthEvent, AuthState> {
-  AuthBloc({AuthRepository? repository})  : _repository = repository ?? AuthRepository(), super(const AuthInitial()) {
+  AuthBloc({AuthRepository? repository})
+      : _repository = repository ?? AuthRepository(),
+        super(const AuthInitial()) {
     on<AuthStarted>(_onStarted);
     on<AuthLoginRequested>(_onLoginRequested);
     on<AuthRegisterRequested>(_onRegisterRequested);
     on<AuthLogoutRequested>(_onLogoutRequested);
     on<AuthSessionExpired>(_onSessionExpired);
 
-    // When DioClient gives up on refresh, tell the Bloc to log out.
     DioClient.instance.onSessionExpired = () {
       add(const AuthSessionExpired());
     };
@@ -24,7 +25,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   final AuthRepository _repository;
 
   // ---------------------------------------------------------------------------
-  // App start — check for an existing session
+  // App start — check for existing session. Never fails to "AuthFailure" —
+  // either the user is authenticated or they're a guest.
   // ---------------------------------------------------------------------------
   Future<void> _onStarted(
     AuthStarted event,
@@ -48,26 +50,22 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       }
 
       emit(AuthAuthenticated(user));
-    } on ApiException catch (e) {
-      if (e.statusCode == 401) {
-        // Token was bad and refresh couldn't save us.
-        await SecureStorage.clearTokens();
-        emit(const AuthUnauthenticated());
-      } else {
-        emit(AuthFailure(e.message));
-      }
+    } on ApiException {
+      // Any failure during bootstrap → treat as guest. Don't clear tokens
+      // on network errors — the first API call will retry refresh anyway.
+      // Only clear on explicit 401.
+      // (DioClient already clears tokens for real 401-after-refresh-fails.)
+      emit(const AuthUnauthenticated());
     }
   }
 
   // ---------------------------------------------------------------------------
-  // Login
+  // Login — no AuthLoading emit; the LoginScreen manages its own spinner.
   // ---------------------------------------------------------------------------
   Future<void> _onLoginRequested(
     AuthLoginRequested event,
     Emitter<AuthState> emit,
   ) async {
-    emit(const AuthLoading());
-
     try {
       final user = await _repository.login(
         username: event.username,
@@ -82,8 +80,6 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 
       emit(AuthAuthenticated(user));
     } on ApiException catch (e) {
-      // Backend rejects inactive users at /auth/token/ with
-      // message "User is inactive" and code "user_inactive".
       final isInactive = e.statusCode == 401 &&
           e.message.toLowerCase().contains('inactive');
 
@@ -96,14 +92,12 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   }
 
   // ---------------------------------------------------------------------------
-  // Register
+  // Register — same as login.
   // ---------------------------------------------------------------------------
   Future<void> _onRegisterRequested(
     AuthRegisterRequested event,
     Emitter<AuthState> emit,
   ) async {
-    emit(const AuthLoading());
-
     try {
       final user = await _repository.register(
         username: event.username,
@@ -117,20 +111,16 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   }
 
   // ---------------------------------------------------------------------------
-  // Logout
+  // Logout — clears tokens, then goes to guest mode (still shows MainScaffold).
   // ---------------------------------------------------------------------------
   Future<void> _onLogoutRequested(
     AuthLogoutRequested event,
     Emitter<AuthState> emit,
   ) async {
-    emit(const AuthLoading());
     await _repository.logout();
     emit(const AuthUnauthenticated());
   }
 
-  // ---------------------------------------------------------------------------
-  // Session expired (from DioClient callback)
-  // ---------------------------------------------------------------------------
   void _onSessionExpired(
     AuthSessionExpired event,
     Emitter<AuthState> emit,
@@ -138,12 +128,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     emit(const AuthUnauthenticated());
   }
 
-  // ---------------------------------------------------------------------------
-  // Cleanup
-  // ---------------------------------------------------------------------------
   @override
   Future<void> close() {
-    // Don't leave a dangling callback pointing at a closed Bloc.
     if (DioClient.instance.onSessionExpired != null) {
       DioClient.instance.onSessionExpired = null;
     }
