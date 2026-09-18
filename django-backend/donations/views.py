@@ -374,12 +374,22 @@ class MyCampaignListView(generics.ListAPIView):
     permission_classes = [IsActiveUser]
 
     def get_queryset(self):
-        return (
+        queryset = (
             Campaign.objects
             .filter(owner=self.request.user)
             .with_donation_totals()
             .order_by('-created_at')
         )
+
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            # Validate against real choices.
+            valid = {c[0] for c in Campaign.Status.choices}
+            normalized = status_filter.upper()
+            if normalized in valid:
+                queryset = queryset.filter(status=normalized)
+
+        return queryset
 
 
 class MyCampaignDetailView(generics.RetrieveUpdateDestroyAPIView):

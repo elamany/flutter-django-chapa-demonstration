@@ -60,16 +60,45 @@ class CampaignRepository {
   // ---------------------------------------------------------------------------
   /// Requires authentication. Returns every campaign owned by the current user,
   /// across all statuses (DRAFT, PENDING_REVIEW, ACTIVE, COMPLETED, REJECTED).
-  Future<PaginatedResult<Campaign>> myCampaigns({int page = 1}) async {
+  Future<PaginatedResult<Campaign>> myCampaigns({
+    String? status,
+    int page = 1,
+  }) async {
     try {
       final res = await _client.get(
         'my-campaigns/',
-        query: {'page': page},
+        query: {
+          'status': ?status,
+          'page': page,
+        },
       );
 
       return PaginatedResult.fromJson(
         res.data as Map<String, dynamic>,
         (json) => Campaign.fromJson(json),
+      );
+    } on DioException catch (e) {
+      throw _unwrap(e);
+    }
+  }
+
+  /// GET /my-campaigns-detail/<pk>/
+  ///
+  /// Owner-scoped detail view. Works for any status — including DRAFT
+  /// and PENDING_REVIEW which the public detail endpoint hides.
+  Future<Campaign> myCampaignDetail(int id) async {
+    try {
+      final res = await _client.get('my-campaigns-detail/$id/');
+      final body = res.data as Map<String, dynamic>;
+
+      if (body['success'] != true || body['data'] is! Map) {
+        throw const ApiException(
+          message: 'Unexpected response from server.',
+        );
+      }
+
+      return Campaign.fromJson(
+        Map<String, dynamic>.from(body['data'] as Map),
       );
     } on DioException catch (e) {
       throw _unwrap(e);

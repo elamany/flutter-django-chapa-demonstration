@@ -17,9 +17,7 @@ class CampaignListBloc extends Bloc<CampaignListEvent, CampaignListState> {
 
   final CampaignRepository _repository;
 
-  // ---------------------------------------------------------------------------
   // Started — initial load, or reload after filter change
-  // ---------------------------------------------------------------------------
   Future<void> _onStarted(
     CampaignListStarted event,
     Emitter<CampaignListState> emit,
@@ -46,9 +44,7 @@ class CampaignListBloc extends Bloc<CampaignListEvent, CampaignListState> {
     }
   }
 
-  // ---------------------------------------------------------------------------
   // Refreshed — reload page 1 with the current filter, keep list visible
-  // ---------------------------------------------------------------------------
   Future<void> _onRefreshed(
     CampaignListRefreshed event,
     Emitter<CampaignListState> emit,
@@ -73,9 +69,7 @@ class CampaignListBloc extends Bloc<CampaignListEvent, CampaignListState> {
     }
   }
 
-  // ---------------------------------------------------------------------------
   // Load more — pagination
-  // ---------------------------------------------------------------------------
   Future<void> _onLoadMore(
     CampaignListLoadMore event,
     Emitter<CampaignListState> emit,
