@@ -16,6 +16,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     on<AuthRegisterRequested>(_onRegisterRequested);
     on<AuthLogoutRequested>(_onLogoutRequested);
     on<AuthSessionExpired>(_onSessionExpired);
+    on<AuthUserUpdated>(_onUserUpdated);
 
     DioClient.instance.onSessionExpired = () {
       add(const AuthSessionExpired());
@@ -112,9 +113,11 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     }
   }
 
-  // ---------------------------------------------------------------------------
+  void _onUserUpdated(AuthUserUpdated event, Emitter<AuthState> emit) {
+    emit(AuthAuthenticated(event.user));
+  }
+
   // Logout — clears tokens, then goes to guest mode (still shows MainScaffold).
-  // ---------------------------------------------------------------------------
   Future<void> _onLogoutRequested(
     AuthLogoutRequested event,
     Emitter<AuthState> emit,

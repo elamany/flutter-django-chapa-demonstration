@@ -19,8 +19,12 @@ class RegisterView(generics.CreateAPIView):
 
 class MeView(generics.RetrieveUpdateAPIView):
     """GET returns the current user. PATCH edits profile fields.
-    GET works for inactive users (so Frontend can tell them why they
+
+    GET works for inactive users (so the app can tell them why they
     can't log in). PATCH is blocked for inactive users.
+
+    Both GET and PATCH respond with the full user object, using
+    MeSerializer, so the client always gets a consistent shape.
     """
 
     authentication_classes = [JWTAuthenticationAllowInactive]
@@ -30,13 +34,14 @@ class MeView(generics.RetrieveUpdateAPIView):
         return self.request.user
 
     def get_serializer_class(self):
+        # Only used by DRF's internal flow; the response is re-serialized
+        # with MeSerializer below, so the client always sees the full user.
         if self.request.method in ('PUT', 'PATCH'):
             return UpdateProfileSerializer
         return MeSerializer
 
     def update(self, request, *args, **kwargs):
-        # Explicitly block PATCH for deactivated users, since our relaxed
-        # auth class lets them through to read /me/.
+        # Block PATCH for deactivated users.
         if not request.user.is_active:
             return Response(
                 {
@@ -45,12 +50,17 @@ class MeView(generics.RetrieveUpdateAPIView):
                 },
                 status=status.HTTP_401_UNAUTHORIZED,
             )
-        return super().update(request, *args, **kwargs)
 
-    def patch(self, request, *args, **kwargs):
-        # DRF's RetrieveUpdateAPIView already provides PATCH; this is
-        # just here to make it obvious the endpoint supports partial updates.
-        return self.partial_update(request, *args, **kwargs)
+        # Let DRF validate + save using UpdateProfileSerializer.
+        # We ignore its Response and re-serialize with MeSerializer.
+        super().update(request, *args, **kwargs)
+
+        # Return the full user, same shape as GET /auth/me/.
+        return Response(
+            MeSerializer(self.request.user).data,
+            status=status.HTTP_200_OK,
+        )
+
 
 
 class ChangePasswordView(APIView):

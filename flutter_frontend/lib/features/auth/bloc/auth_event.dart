@@ -1,5 +1,7 @@
 import 'package:equatable/equatable.dart';
 
+import '../data/models/user.dart';
+
 /// Everything the UI can ask the AuthBloc to do.
 ///
 /// Sealed class → the compiler forces us to handle every subclass,
@@ -54,6 +56,17 @@ final class AuthRegisterRequested extends AuthEvent {
         firstName,
         lastName,
       ];
+}
+
+/// The current user's profile was updated elsewhere (via the
+/// Edit Profile screen). Replace the state with the new user data.
+final class AuthUserUpdated extends AuthEvent {
+  final AppUser user;
+
+  const AuthUserUpdated(this.user);
+
+  @override
+  List<Object?> get props => [user];
 }
 
 /// Fired when the user taps "Log out".

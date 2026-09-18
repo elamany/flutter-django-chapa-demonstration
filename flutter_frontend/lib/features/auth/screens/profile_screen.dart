@@ -5,6 +5,8 @@ import '../bloc/auth_bloc.dart';
 import '../bloc/auth_event.dart';
 import '../bloc/auth_state.dart';
 import '../../main/sign_in_prompt.dart';
+import 'change_password_screen.dart';
+import 'edit_profile_screen.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -85,7 +87,11 @@ class ProfileScreen extends StatelessWidget {
                       title: const Text('Edit profile'),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () {
-                        // Next step.
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const EditProfileScreen(),
+                          ),
+                        );
                       },
                     ),
                     const Divider(height: 1),
@@ -94,7 +100,11 @@ class ProfileScreen extends StatelessWidget {
                       title: const Text('Change password'),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () {
-                        // Next step.
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const ChangePasswordScreen(),
+                          ),
+                        );
                       },
                     ),
                   ],
