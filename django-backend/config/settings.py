@@ -58,7 +58,7 @@ DEBUG = True
 ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
-    'annually-fork-junior-directly.trycloudflare.com',
+    'occurring-reservation-passive-waiting.trycloudflare.com',
     '10.0.2.2'
 ]
 

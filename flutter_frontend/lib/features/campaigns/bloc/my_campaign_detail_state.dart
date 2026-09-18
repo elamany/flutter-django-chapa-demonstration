@@ -18,10 +18,30 @@ final class MyCampaignDetailLoading extends MyCampaignDetailState {
 
 final class MyCampaignDetailLoaded extends MyCampaignDetailState {
   final Campaign campaign;
-  const MyCampaignDetailLoaded(this.campaign);
+  final bool isActioning;
+  final String? actionError;
+
+  const MyCampaignDetailLoaded(
+    this.campaign, {
+    this.isActioning = false,
+    this.actionError,
+  });
+
+  MyCampaignDetailLoaded copyWith({
+    Campaign? campaign,
+    bool? isActioning,
+    String? actionError,
+    bool clearError = false,
+  }) {
+    return MyCampaignDetailLoaded(
+      campaign ?? this.campaign,
+      isActioning: isActioning ?? this.isActioning,
+      actionError: clearError ? null : (actionError ?? this.actionError),
+    );
+  }
 
   @override
-  List<Object?> get props => [campaign];
+  List<Object?> get props => [campaign, isActioning, actionError];
 }
 
 final class MyCampaignDetailFailure extends MyCampaignDetailState {
@@ -31,3 +51,4 @@ final class MyCampaignDetailFailure extends MyCampaignDetailState {
   @override
   List<Object?> get props => [message];
 }
+

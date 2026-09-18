@@ -103,6 +103,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         username: event.username,
         email: event.email,
         password: event.password,
+        firstName: event.firstName,
+        lastName: event.lastName,
       );
       emit(AuthAuthenticated(user));
     } on ApiException catch (e) {

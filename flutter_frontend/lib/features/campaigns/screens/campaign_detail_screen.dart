@@ -228,6 +228,14 @@ class _LoadedBody extends StatelessWidget {
           SliverAppBar(
             expandedHeight: 240,
             pinned: true,
+            leading: IconButton(
+              onPressed: () => Navigator.of(context).maybePop(),
+              icon: const Icon(Icons.arrow_back),
+              style: IconButton.styleFrom(
+                foregroundColor: Colors.white,
+                backgroundColor: Colors.black45, // makes it visible on any image
+              ),
+            ),
             flexibleSpace: FlexibleSpaceBar(
               background: _HeroImage(url: campaign.imageUrl),
             ),

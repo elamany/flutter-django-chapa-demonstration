@@ -19,6 +19,7 @@ dependencies:
   #chapasdk: ^0.0.8+1
   cached_network_image: ^4.0.0
   flutter_inappwebview: ^6.1.5
+  image_picker: ^1.2.3
 
 dev_dependencies:
   flutter_test:

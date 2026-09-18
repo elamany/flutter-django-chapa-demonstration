@@ -11,7 +11,17 @@ from rest_framework_simplejwt.exceptions import TokenError
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(
         write_only=True,
-        min_length=8
+        min_length=8,
+    )
+    first_name = serializers.CharField(
+        max_length=150,
+        required=False,
+        allow_blank=True,
+    )
+    last_name = serializers.CharField(
+        max_length=150,
+        required=False,
+        allow_blank=True,
     )
 
     class Meta:
@@ -19,6 +29,8 @@ class RegisterSerializer(serializers.ModelSerializer):
         fields = [
             'username',
             'email',
+            'first_name',
+            'last_name',
             'password',
         ]
 
@@ -27,10 +39,11 @@ class RegisterSerializer(serializers.ModelSerializer):
             username=validated_data['username'],
             email=validated_data['email'],
             password=validated_data['password'],
+            first_name=validated_data.get('first_name', ''),
+            last_name=validated_data.get('last_name', ''),
         )
-
         return user
-    
+
     def validate_password(self, value):
         validate_password(value)
         return value

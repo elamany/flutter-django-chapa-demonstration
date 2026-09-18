@@ -10,13 +10,12 @@ import '../../donations/widgets/donor_latest_5_list_wall_widget.dart';
 import '../bloc/my_campaign_detail_bloc.dart';
 import '../bloc/my_campaign_detail_event.dart';
 import '../bloc/my_campaign_detail_state.dart';
+import '../data/models/campaign.dart';
 import '../widgets/campaign_detail_skeleton.dart';
+import 'edit_my_campaign_screen.dart';
 
 class MyCampaignDetailScreen extends StatelessWidget {
-  const MyCampaignDetailScreen({
-    super.key,
-    required this.campaignId,
-  });
+  const MyCampaignDetailScreen({super.key, required this.campaignId});
 
   final int campaignId;
 
@@ -51,13 +50,27 @@ class _MyCampaignDetailView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return BlocBuilder<MyCampaignDetailBloc, MyCampaignDetailState>(
-      builder: (context, state) {
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text('Manage Campaign'),
-          ),
-          body: switch (state) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Manage Campaign')),
+      body: BlocConsumer<MyCampaignDetailBloc, MyCampaignDetailState>(
+        listenWhen: (prev, curr) {
+          if (prev is! MyCampaignDetailLoaded ||
+              curr is! MyCampaignDetailLoaded) {
+            return false;
+          }
+          return curr.actionError != null &&
+              curr.actionError != prev.actionError;
+        },
+        listener: (context, state) {
+          if (state is MyCampaignDetailLoaded &&
+              state.actionError != null) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(state.actionError!)),
+            );
+          }
+        },
+        builder: (context, state) {
+          return switch (state) {
             MyCampaignDetailInitial() || MyCampaignDetailLoading() =>
               const ShimmerGroup(child: CampaignDetailSkeleton()),
             MyCampaignDetailFailure() => _FailureView(
@@ -68,35 +81,34 @@ class _MyCampaignDetailView extends StatelessWidget {
                 campaign: state.campaign,
                 onRefresh: () => _refresh(context),
               ),
-          },
-        );
-      },
+          };
+        },
+      ),
     );
   }
 }
 
+// Loaded body — hero image, title, progress, Manage card, donor wall
 class _LoadedBody extends StatelessWidget {
   const _LoadedBody({
     required this.campaign,
     required this.onRefresh,
   });
 
-  final dynamic campaign;
+  final Campaign campaign;
   final Future<void> Function() onRefresh;
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-
     return RefreshIndicator(
       onRefresh: onRefresh,
       child: CustomScrollView(
         slivers: [
-          SliverAppBar(
-            expandedHeight: 220,
-            pinned: true,
-            flexibleSpace: FlexibleSpaceBar(
-              background: _HeroImage(url: campaign.imageUrl as String?),
+          // Hero image — no SliverAppBar, no back button overlay.
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: 220,
+              child: _HeroImage(url: campaign.imageUrl),
             ),
           ),
           SliverToBoxAdapter(
@@ -106,17 +118,28 @@ class _LoadedBody extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    campaign.title as String,
+                    campaign.title,
                     style: Theme.of(context)
                         .textTheme
                         .headlineSmall
                         ?.copyWith(fontWeight: FontWeight.w600),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      _StatusPill(campaign: campaign),
+                      const SizedBox(width: 8),
+                      Text(
+                        'by ${campaign.ownerDisplayName}',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+
                   _ProgressBlock(campaign: campaign),
                   const SizedBox(height: 24),
 
-                  // Manage actions — placeholder for now
                   Text(
                     'Manage',
                     style: Theme.of(context)
@@ -125,39 +148,29 @@ class _LoadedBody extends StatelessWidget {
                         ?.copyWith(fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 12),
-                  Card(
-                    child: Column(
-                      children: [
-                        ListTile(
-                          leading: const Icon(Icons.edit_outlined),
-                          title: const Text('Edit campaign'),
-                          trailing: const Icon(Icons.chevron_right),
-                          onTap: () {},
-                        ),
-                        const Divider(height: 1),
-                        ListTile(
-                          leading: const Icon(Icons.flag_outlined),
-                          title: const Text('Campaign actions'),
-                          subtitle: const Text('Submit, cancel, complete…'),
-                          trailing: const Icon(Icons.chevron_right),
-                          onTap: () {},
-                        ),
-                      ],
-                    ),
-                  ),
+                  const _ManageCard(),
+
                   const SizedBox(height: 24),
 
                   Text(
-                    'Recent donations',
+                    'About this campaign',
                     style: Theme.of(context)
                         .textTheme
                         .titleMedium
                         ?.copyWith(fontWeight: FontWeight.w600),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
+                  Text(
+                    campaign.description.isEmpty
+                        ? 'No description provided.'
+                        : campaign.description,
+                    style: Theme.of(context).textTheme.bodyLarge,
+                  ),
+                  const SizedBox(height: 24),
+
                   DonorWallSection(
-                    campaignId: campaign.id as int,
-                    campaignTitle: campaign.title as String,
+                    campaignId: campaign.id,
+                    campaignTitle: campaign.title,
                   ),
 
                   const SizedBox(height: 32),
@@ -166,6 +179,131 @@ class _LoadedBody extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// Manage card — its own widget so it reacts to isActioning independently
+class _ManageCard extends StatelessWidget {
+  const _ManageCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return BlocBuilder<MyCampaignDetailBloc, MyCampaignDetailState>(
+      builder: (context, state) {
+        if (state is! MyCampaignDetailLoaded) {
+          return const SizedBox.shrink();
+        }
+
+        final campaign = state.campaign;
+        final isActioning = state.isActioning;
+
+        return Card(
+          child: Column(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('Edit campaign'),
+                trailing: const Icon(Icons.chevron_right),
+                enabled: !isActioning,
+                onTap: () async {
+                  final changed = await Navigator.of(context).push<bool>(
+                    MaterialPageRoute(
+                      builder: (_) => EditMyCampaignScreen(
+                        campaignId: campaign.id,
+                      ),
+                    ),
+                  );
+                  if (changed == true && context.mounted) {
+                    context
+                        .read<MyCampaignDetailBloc>()
+                        .add(const MyCampaignDetailRefreshed());
+                  }
+                },
+              ),
+              if (_showSubmitForReview(campaign))
+                _ActionTile(
+                  icon: Icons.send_outlined,
+                  title: 'Submit for review',
+                  subtitle:
+                      'Admins will review and approve this campaign.',
+                  loading: isActioning,
+                  onTap: () => _confirm(
+                    context,
+                    title: 'Submit for review?',
+                    body:
+                        'Your campaign will be sent to admins for review.',
+                    onConfirm: () => context
+                        .read<MyCampaignDetailBloc>()
+                        .add(const MyCampaignDetailSubmitForReview()),
+                  ),
+                ),
+              if (_showCancelSubmission(campaign))
+                _ActionTile(
+                  icon: Icons.undo_outlined,
+                  title: 'Cancel submission',
+                  subtitle: 'Return to draft and keep editing.',
+                  loading: isActioning,
+                  onTap: () => context
+                      .read<MyCampaignDetailBloc>()
+                      .add(const MyCampaignDetailCancelSubmission()),
+                ),
+              if (_showMarkComplete(campaign))
+                _ActionTile(
+                  icon: Icons.check_circle_outline,
+                  title: 'Mark as complete',
+                  subtitle: 'Stop accepting donations for this campaign.',
+                  loading: isActioning,
+                  onTap: () => _confirm(
+                    context,
+                    title: 'Mark as complete?',
+                    body:
+                        'Donations will no longer be accepted. This cannot be undone.',
+                    onConfirm: () => context
+                        .read<MyCampaignDetailBloc>()
+                        .add(const MyCampaignDetailMarkComplete()),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// Helpers
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({required this.campaign});
+
+  final Campaign campaign;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final (bg, fg) = switch (campaign.status) {
+      'DRAFT' => (scheme.surfaceContainerHighest, scheme.onSurfaceVariant),
+      'PENDING_REVIEW' => (const Color(0xFFFFF3C4), const Color(0xFF8A6100)),
+      'ACTIVE' => (const Color(0xFFD6F5DD), const Color(0xFF166534)),
+      'COMPLETED' => (const Color(0xFFDBEAFE), const Color(0xFF1E40AF)),
+      'REJECTED' => (scheme.errorContainer, scheme.onErrorContainer),
+      _ => (scheme.surfaceContainerHighest, scheme.onSurfaceVariant),
+    };
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        campaign.statusLabel,
+        style: TextStyle(
+          color: fg,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
@@ -192,9 +330,9 @@ class _HeroImage extends StatelessWidget {
     return CachedNetworkImage(
       imageUrl: url!,
       fit: BoxFit.cover,
-      placeholder: (_, _) =>
+      placeholder: (_, __) =>
           Container(color: scheme.surfaceContainerHighest),
-      errorWidget: (_, _, _) => Container(
+      errorWidget: (_, __, ___) => Container(
         color: scheme.surfaceContainerHighest,
         child: Icon(
           Icons.broken_image_outlined,
@@ -208,16 +346,11 @@ class _HeroImage extends StatelessWidget {
 class _ProgressBlock extends StatelessWidget {
   const _ProgressBlock({required this.campaign});
 
-  final dynamic campaign;
+  final Campaign campaign;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final raised = campaign.raisedAmount as double;
-    final target = campaign.targetAmount as double;
-    final progress = campaign.progressFraction as double;
-    final percent = campaign.progressPercent as double;
-    final count = campaign.donationCount as int;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -232,7 +365,7 @@ class _ProgressBlock extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                'ETB ${Formatters.money(raised)}',
+                'ETB ${Formatters.money(campaign.raisedAmount)}',
                 style: Theme.of(context)
                     .textTheme
                     .headlineSmall
@@ -242,7 +375,7 @@ class _ProgressBlock extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Text(
-                  'of ETB ${Formatters.money(target)}',
+                  'of ETB ${Formatters.money(campaign.targetAmount)}',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ),
@@ -252,7 +385,7 @@ class _ProgressBlock extends StatelessWidget {
           ClipRRect(
             borderRadius: BorderRadius.circular(6),
             child: LinearProgressIndicator(
-              value: progress,
+              value: campaign.progressFraction,
               minHeight: 8,
               backgroundColor: scheme.surfaceContainerHighest,
             ),
@@ -261,7 +394,7 @@ class _ProgressBlock extends StatelessWidget {
           Row(
             children: [
               Text(
-                '${percent.toStringAsFixed(0)}% funded',
+                '${campaign.progressPercent.toStringAsFixed(0)}% funded',
                 style: Theme.of(context)
                     .textTheme
                     .bodyMedium
@@ -269,7 +402,8 @@ class _ProgressBlock extends StatelessWidget {
               ),
               const Spacer(),
               Text(
-                '$count ${count == 1 ? "donation" : "donations"}',
+                '${campaign.donationCount} '
+                '${campaign.donationCount == 1 ? "donation" : "donations"}',
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
             ],
@@ -313,6 +447,70 @@ class _FailureView extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+bool _showSubmitForReview(Campaign c) => c.status == 'DRAFT';
+bool _showCancelSubmission(Campaign c) => c.status == 'PENDING_REVIEW';
+bool _showMarkComplete(Campaign c) => c.status == 'ACTIVE';
+
+Future<void> _confirm(
+  BuildContext context, {
+  required String title,
+  required String body,
+  required VoidCallback onConfirm,
+}) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title),
+      content: Text(body),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Confirm'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed == true) onConfirm();
+}
+
+class _ActionTile extends StatelessWidget {
+  const _ActionTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.loading,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final bool loading;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: Icon(icon),
+      title: Text(title),
+      subtitle: Text(subtitle),
+      trailing: loading
+          ? const SizedBox(
+              height: 20,
+              width: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : const Icon(Icons.chevron_right),
+      enabled: !loading,
+      onTap: onTap,
     );
   }
 }

@@ -4,6 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../bloc/auth_bloc.dart';
 import '../bloc/auth_event.dart';
 import '../bloc/auth_state.dart';
+import 'login_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -14,6 +15,8 @@ class RegisterScreen extends StatefulWidget {
 
 class _RegisterScreenState extends State<RegisterScreen> {
   final _formKey = GlobalKey<FormState>();
+  final _firstNameCtrl = TextEditingController();
+  final _lastNameCtrl = TextEditingController();
   final _usernameCtrl = TextEditingController();
   final _emailCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
@@ -23,6 +26,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   @override
   void dispose() {
+    _firstNameCtrl.dispose();
+    _lastNameCtrl.dispose();
     _usernameCtrl.dispose();
     _emailCtrl.dispose();
     _passwordCtrl.dispose();
@@ -39,6 +44,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
             username: _usernameCtrl.text.trim(),
             email: _emailCtrl.text.trim(),
             password: _passwordCtrl.text,
+            firstName: _firstNameCtrl.text.trim(),
+            lastName: _lastNameCtrl.text.trim(),
           ),
         );
   }
@@ -49,17 +56,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
       appBar: AppBar(),
       body: SafeArea(
         child: BlocListener<AuthBloc, AuthState>(
-          listenWhen: (prev, curr) =>
-              curr is AuthFailure || curr is AuthAuthenticated,
+          listenWhen: (_, curr) =>
+              curr is AuthAuthenticated ||
+              curr is AuthFailure ||
+              curr is AuthInactive,
           listener: (context, state) {
+            if (state is AuthAuthenticated) {
+              if (Navigator.of(context).canPop()) {
+                Navigator.of(context).pop();
+              }
+              return;
+            }
             if (state is AuthFailure) {
               setState(() => _submitting = false);
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text(state.message)),
               );
+              return;
             }
-            if (state is AuthAuthenticated) {
-              Navigator.of(context).pop();
+            if (state is AuthInactive) {
+              if (Navigator.of(context).canPop()) {
+                Navigator.of(context).pop();
+              }
             }
           },
           child: Center(
@@ -85,11 +103,37 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       ),
                       const SizedBox(height: 32),
 
+                      // First name
+                      TextFormField(
+                        controller: _firstNameCtrl,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: 'First name',
+                          prefixIcon: Icon(Icons.badge_outlined),
+                        ),
+                        textInputAction: TextInputAction.next,
+                      ),
+                      const SizedBox(height: 16),
+
+                      // Last name
+                      TextFormField(
+                        controller: _lastNameCtrl,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: 'Last name',
+                          prefixIcon: Icon(Icons.badge_outlined),
+                        ),
+                        textInputAction: TextInputAction.next,
+                      ),
+                      const SizedBox(height: 16),
+
+                      // Username
                       TextFormField(
                         controller: _usernameCtrl,
                         decoration: const InputDecoration(
                           labelText: 'Username',
                           prefixIcon: Icon(Icons.person_outline),
+                          helperText: 'Used to log in — must be unique',
                         ),
                         textInputAction: TextInputAction.next,
                         validator: (v) => (v == null || v.trim().isEmpty)
@@ -98,6 +142,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       ),
                       const SizedBox(height: 16),
 
+                      // Email
                       TextFormField(
                         controller: _emailCtrl,
                         keyboardType: TextInputType.emailAddress,
@@ -110,12 +155,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           if (v == null || v.trim().isEmpty) {
                             return 'Email is required';
                           }
-                          if (!v.contains('@')) return 'Enter a valid email';
+                          if (!v.contains('@') || !v.contains('.')) {
+                            return 'Enter a valid email';
+                          }
                           return null;
                         },
                       ),
                       const SizedBox(height: 16),
 
+                      // Password
                       TextFormField(
                         controller: _passwordCtrl,
                         obscureText: _obscure,
@@ -145,6 +193,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       ),
                       const SizedBox(height: 16),
 
+                      // Confirm password
                       TextFormField(
                         controller: _confirmCtrl,
                         obscureText: _obscure,
@@ -171,6 +220,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                 width: 20,
                                 child: CircularProgressIndicator(
                                   strokeWidth: 2,
+                                  color: Colors.white,
                                 ),
                               )
                             : const Text('Create account'),
@@ -179,8 +229,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       const SizedBox(height: 16),
 
                       TextButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        child: const Text('Already have an account? Sign in'),
+                        onPressed: () {
+                          Navigator.of(context).pushReplacement(
+                            MaterialPageRoute(
+                              builder: (_) => const LoginScreen(),
+                            ),
+                          );
+                        },
+                        child: const Text(
+                          'Already have an account? Sign in',
+                        ),
                       ),
                     ],
                   ),

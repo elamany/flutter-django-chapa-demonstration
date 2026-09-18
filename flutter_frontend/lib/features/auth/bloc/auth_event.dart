@@ -35,15 +35,25 @@ final class AuthRegisterRequested extends AuthEvent {
   final String username;
   final String email;
   final String password;
+  final String firstName;
+  final String lastName;
 
   const AuthRegisterRequested({
     required this.username,
     required this.email,
     required this.password,
+    required this.firstName,
+    required this.lastName,
   });
 
   @override
-  List<Object?> get props => [username, email, password];
+  List<Object?> get props => [
+        username,
+        email,
+        password,
+        firstName,
+        lastName,
+      ];
 }
 
 /// Fired when the user taps "Log out".

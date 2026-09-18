@@ -18,3 +18,15 @@ final class MyCampaignDetailStarted extends MyCampaignDetailEvent {
 final class MyCampaignDetailRefreshed extends MyCampaignDetailEvent {
   const MyCampaignDetailRefreshed();
 }
+
+final class MyCampaignDetailSubmitForReview extends MyCampaignDetailEvent {
+  const MyCampaignDetailSubmitForReview();
+}
+
+final class MyCampaignDetailCancelSubmission extends MyCampaignDetailEvent {
+  const MyCampaignDetailCancelSubmission();
+}
+
+final class MyCampaignDetailMarkComplete extends MyCampaignDetailEvent {
+  const MyCampaignDetailMarkComplete();
+}

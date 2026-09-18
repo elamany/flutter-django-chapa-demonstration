@@ -61,6 +61,8 @@ class AuthRepository {
     required String username,
     required String email,
     required String password,
+    required String firstName,
+    required String lastName,
   }) async {
     try {
       await _client.post(
@@ -69,9 +71,10 @@ class AuthRepository {
           'username': username,
           'email': email,
           'password': password,
+          'first_name': firstName,
+          'last_name': lastName,
         },
       );
-      //todo account verification
 
       return await login(username: username, password: password);
     } on DioException catch (e) {

@@ -4,6 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../bloc/auth_bloc.dart';
 import '../bloc/auth_event.dart';
 import '../bloc/auth_state.dart';
+import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -16,7 +17,8 @@ class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
   final _usernameCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
-  bool _obscurePassword = true;
+  bool _obscure = true;
+  bool _submitting = false;
 
   @override
   void dispose() {
@@ -27,7 +29,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   void _submit() {
     if (!_formKey.currentState!.validate()) return;
-
+    setState(() => _submitting = true);
     context.read<AuthBloc>().add(
           AuthLoginRequested(
             username: _usernameCtrl.text.trim(),
@@ -39,16 +41,38 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(),
       body: SafeArea(
         child: BlocListener<AuthBloc, AuthState>(
-          // Show a SnackBar when login fails, without rebuilding the whole
-          // screen on every state change.
-          listenWhen: (prev, curr) => curr is AuthFailure,
+          // Only react to terminal outcomes; ignore Loading/Initial.
+          listenWhen: (_, curr) =>
+              curr is AuthAuthenticated ||
+              curr is AuthFailure ||
+              curr is AuthInactive,
           listener: (context, state) {
+            if (state is AuthAuthenticated) {
+              // Pop back to MainScaffold, which now rebuilds as
+              // authenticated and reveals the real content behind us.
+              if (Navigator.of(context).canPop()) {
+                Navigator.of(context).pop();
+              }
+              return;
+            }
+
             if (state is AuthFailure) {
+              setState(() => _submitting = false);
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text(state.message)),
               );
+              return;
+            }
+
+            // AuthInactive — root router will swap in InactiveScreen.
+            // Just close this sheet so the user doesn't see it on top.
+            if (state is AuthInactive) {
+              if (Navigator.of(context).canPop()) {
+                Navigator.of(context).pop();
+              }
             }
           },
           child: Center(
@@ -95,19 +119,18 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       TextFormField(
                         controller: _passwordCtrl,
-                        obscureText: _obscurePassword,
+                        obscureText: _obscure,
                         decoration: InputDecoration(
                           labelText: 'Password',
                           prefixIcon: const Icon(Icons.lock_outline),
                           suffixIcon: IconButton(
                             icon: Icon(
-                              _obscurePassword
+                              _obscure
                                   ? Icons.visibility_outlined
                                   : Icons.visibility_off_outlined,
                             ),
-                            onPressed: () => setState(
-                              () => _obscurePassword = !_obscurePassword,
-                            ),
+                            onPressed: () =>
+                                setState(() => _obscure = !_obscure),
                           ),
                         ),
                         textInputAction: TextInputAction.done,
@@ -118,36 +141,33 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(height: 24),
 
-                      BlocBuilder<AuthBloc, AuthState>(
-                        builder: (context, state) {
-                          final loading = state is AuthLoading;
-                          return ElevatedButton(
-                            onPressed: loading ? null : _submit,
-                            child: loading
-                                ? const SizedBox(
-                                    height: 20,
-                                    width: 20,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Text('Log in'),
-                          );
-                        },
+                      ElevatedButton(
+                        onPressed: _submitting ? null : _submit,
+                        child: _submitting
+                            ? const SizedBox(
+                                height: 20,
+                                width: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Text('Log in'),
                       ),
 
                       const SizedBox(height: 16),
 
                       TextButton(
                         onPressed: () {
-                          // We'll wire this in the next step.
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Register screen coming next.'),
+                          Navigator.of(context).pushReplacement(
+                            MaterialPageRoute(
+                              builder: (_) => const RegisterScreen(),
                             ),
                           );
                         },
-                        child: const Text("Don't have an account? Sign up"),
+                        child: const Text(
+                          "Don't have an account? Sign up",
+                        ),
                       ),
                     ],
                   ),
