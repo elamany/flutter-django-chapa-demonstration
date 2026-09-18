@@ -1,5 +1,8 @@
 from django.conf import settings
 from django.db import transaction
+from django.http import HttpResponse
+from django.utils.html import escape
+from django.core.cache import cache
 
 from rest_framework import generics, status
 from rest_framework.pagination import PageNumberPagination
@@ -7,12 +10,14 @@ from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.exceptions import NotFound, PermissionDenied
+
 from accounts.permissions import IsActiveUser
 
 from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
 import json
+import logging
 import uuid
 
 from .models import Campaign, Donation
@@ -23,15 +28,22 @@ from .serializers import (
     CampaignDetailSerializer,
     AdminCampaignStatusSerializer,
     DonationCreateSerializer,
-    OwnerDonationListSerializer,   
-    PublicDonationListSerializer,   
+    MobileDonationCreateSerializer,
+    OwnerDonationListSerializer,
+    PublicDonationListSerializer,
     DonationFilterSerializer,
 )
-
 from .services.chapa import ChapaPaymentService
 
+logger = logging.getLogger(__name__)
 
+CURRENCY = getattr(settings, 'CHAPA_CURRENCY', 'ETB')
+
+
+# ---------------------------------------------------------------------------
 # Response helpers
+# ---------------------------------------------------------------------------
+
 def success_response(data=None, message=None, http_status=status.HTTP_200_OK):
     body = {'success': True}
     if message is not None:
@@ -59,22 +71,45 @@ def donation_payload(donation, **extra):
     return data
 
 
+# ---------------------------------------------------------------------------
 # Campaign helpers
-def get_user_campaign_or_404(pk, user):
-    try:
-        return Campaign.objects.get(pk=pk, owner=user)
-    except Campaign.DoesNotExist:
-        return None
+# ---------------------------------------------------------------------------
+
+def get_campaign(*, pk, owner=None, statuses=None, as_exception=False):
+    """
+    Unified campaign lookup.
+
+    Returns (campaign, error_response_or_None).
+    If as_exception=True, raises NotFound instead of returning an error response.
+    """
+    qs = Campaign.objects.filter(pk=pk)
+    if owner is not None:
+        qs = qs.filter(owner=owner)
+    if statuses is not None:
+        qs = qs.filter(status__in=statuses)
+
+    campaign = qs.first()
+    if campaign is None:
+        if as_exception:
+            raise NotFound('Campaign not found.')
+        return None, error_response('Campaign not found.', status.HTTP_404_NOT_FOUND)
+    return campaign, None
 
 
-def campaign_not_found():
-    return error_response(
-        'Campaign not found.',
-        status.HTTP_404_NOT_FOUND,
+def serialize_campaign_with_totals(campaign):
+    """Re-fetch campaign with donation totals and serialize it."""
+    campaign = (
+        Campaign.objects
+        .with_donation_totals()
+        .get(pk=campaign.pk)
     )
+    return CampaignDetailSerializer(campaign).data
 
 
+# ---------------------------------------------------------------------------
 # Payment helpers
+# ---------------------------------------------------------------------------
+
 def find_donation_by_tx_ref(tx_ref):
     return (
         Donation.objects
@@ -91,6 +126,7 @@ def verify_with_chapa(tx_ref):
     try:
         verification = ChapaPaymentService().verify_payment(tx_ref)
     except Exception:
+        logger.exception('Chapa verification failed for tx_ref=%s', tx_ref)
         return None, error_response(
             'Unable to verify payment with the payment provider.',
             status.HTTP_502_BAD_GATEWAY,
@@ -110,7 +146,7 @@ def validate_chapa_payload(verification, donation):
             status.HTTP_400_BAD_REQUEST,
         )
 
-    if chapa_data.get('currency') != 'ETB':
+    if chapa_data.get('currency') != CURRENCY:
         return None, error_response(
             'Currency mismatch.',
             status.HTTP_400_BAD_REQUEST,
@@ -154,7 +190,7 @@ def finalize_donation(donation, target_status):
             Donation.Status.SUCCESS,
             Donation.Status.FAILED,
         ):
-            # Already in the other terminal state - never move it.
+            # Already in the other terminal state – never move it.
             return locked, False
 
         locked.status = target_status
@@ -169,10 +205,10 @@ OUTCOME_FAILED = 'failed'
 OUTCOME_ALREADY_FAILED = 'already_failed'
 OUTCOME_UNEXPECTED = 'unexpected'
 
+
 def settle_donation(donation, chapa_status):
     """Transition a donation based on a verified Chapa payment status.
-    Returns (donation, outcome), where outcome is one of the OUTCOME_*
-    constants above.
+    Returns (donation, outcome).
     """
     if chapa_status == 'success':
         donation, changed = finalize_donation(
@@ -190,21 +226,16 @@ def settle_donation(donation, chapa_status):
             return donation, OUTCOME_FAILED
         if donation.status == Donation.Status.FAILED:
             return donation, OUTCOME_ALREADY_FAILED
-        # Donation is already SUCCESS - never downgrade a paid donation.
+        # Donation is already SUCCESS – never downgrade a paid donation.
         return donation, OUTCOME_ALREADY_SUCCESS
 
     return donation, OUTCOME_UNEXPECTED
 
+
 def process_payment_verification(donation):
     """Run verify -> validate -> settle for a donation.
-    Returns a dict:
-      {
-        'donation': Donation,
-        'chapa_data': dict,
-        'chapa_status': str,
-        'outcome': str,
-        'error_response': Response | None,
-      }
+    Returns a dict with keys:
+      donation, chapa_data, chapa_status, outcome, error_response
     """
     verification, error = verify_with_chapa(donation.tx_ref)
     if error:
@@ -226,7 +257,67 @@ def process_payment_verification(donation):
     }
 
 
-# Campaigns
+def handle_payment_outcome(outcome, donation, chapa_data=None, *, for_webhook=False):
+    """Map a settle outcome to an HTTP response (used by webhook & verify paths)."""
+    currency = chapa_data.get('currency') if chapa_data else None
+
+    if outcome in (OUTCOME_SUCCESS, OUTCOME_ALREADY_SUCCESS):
+        if for_webhook:
+            message = (
+                'Webhook payment processed successfully.'
+                if outcome == OUTCOME_SUCCESS
+                else 'Donation already processed.'
+            )
+            return success_response(
+                message=message,
+                data=donation_payload(donation, currency=currency),
+            )
+        # Non-webhook callers usually just need the updated status.
+        return success_response(
+            data={'tx_ref': donation.tx_ref, 'status': donation.status}
+        )
+
+    if outcome in (OUTCOME_FAILED, OUTCOME_ALREADY_FAILED):
+        message = (
+            'Payment failed.'
+            if outcome == OUTCOME_FAILED
+            else 'Donation already marked as failed.'
+        )
+        return error_response(
+            message,
+            status.HTTP_200_OK,
+            data=donation_payload(donation, currency=currency),
+        )
+
+    return error_response(
+        'Unexpected payment status.',
+        status.HTTP_502_BAD_GATEWAY,
+        data={
+            'donation_id': donation.id,
+            'tx_ref': donation.tx_ref,
+            'chapa_status': (chapa_data or {}).get('status'),
+        },
+    )
+
+
+def create_pending_donation(campaign, serializer_class, data):
+    """Shared logic for creating a PENDING donation + tx_ref."""
+    serializer = serializer_class(data=data)
+    serializer.is_valid(raise_exception=True)
+
+    tx_ref = f'CAMP-{campaign.id}-{uuid.uuid4()}'
+    donation = serializer.save(
+        campaign=campaign,
+        status=Donation.Status.PENDING,
+        tx_ref=tx_ref,
+    )
+    return donation
+
+
+# ---------------------------------------------------------------------------
+# Campaign views
+# ---------------------------------------------------------------------------
+
 class CampaignPagination(PageNumberPagination):
     page_size = 10
 
@@ -255,16 +346,15 @@ class CampaignListView(generics.ListCreateAPIView):
             ]
         )
 
-        params = CampaignFilterSerializer(
-            data=self.request.query_params
-        )
+        params = CampaignFilterSerializer(data=self.request.query_params)
         params.is_valid(raise_exception=True)
 
         status_filter = params.validated_data.get('status')
         if status_filter:
             queryset = queryset.filter(status=status_filter)
 
-        return queryset.with_donation_totals() 
+        return queryset.with_donation_totals().order_by('-created_at')
+
 
 class CampaignDetailView(generics.RetrieveAPIView):
     serializer_class = CampaignDetailSerializer
@@ -276,6 +366,7 @@ class CampaignDetailView(generics.RetrieveAPIView):
                 Campaign.Status.COMPLETED,
             ]
         ).with_donation_totals()
+
 
 class MyCampaignListView(generics.ListAPIView):
     serializer_class = CampaignListSerializer
@@ -289,6 +380,7 @@ class MyCampaignListView(generics.ListAPIView):
             .with_donation_totals()
             .order_by('-created_at')
         )
+
 
 class MyCampaignDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsActiveUser]
@@ -351,6 +443,7 @@ class MyCampaignDetailView(generics.RetrieveUpdateDestroyAPIView):
             instance.image.delete(save=False)
         instance.delete()
 
+
 class CampaignStatusActionView(APIView):
     """Generic owner-side campaign status transition.
 
@@ -363,9 +456,9 @@ class CampaignStatusActionView(APIView):
     deny_message = ''
 
     def post(self, request, pk):
-        campaign = get_user_campaign_or_404(pk, request.user)
-        if campaign is None:
-            return campaign_not_found()
+        campaign, error = get_campaign(pk=pk, owner=request.user)
+        if error:
+            return error
 
         if campaign.status != self.from_status:
             return error_response(
@@ -376,16 +469,10 @@ class CampaignStatusActionView(APIView):
         campaign.status = self.to_status
         campaign.save(update_fields=['status', 'updated_at'])
 
-        # Re-fetch with totals so the serializer has the annotations.
-        campaign = (
-            Campaign.objects
-            .with_donation_totals()
-            .get(pk=campaign.pk)
+        return success_response(
+            data=serialize_campaign_with_totals(campaign)
         )
 
-        return success_response(
-            data=CampaignDetailSerializer(campaign).data
-        )
 
 class SubmitCampaignForReviewView(CampaignStatusActionView):
     from_status = Campaign.Status.DRAFT
@@ -400,20 +487,24 @@ class CancelCampaignSubmissionView(CampaignStatusActionView):
         'Only campaigns pending review can have their submission cancelled.'
     )
 
+
 class MarkMyCampaignAsCompleteView(CampaignStatusActionView):
     from_status = Campaign.Status.ACTIVE
     to_status = Campaign.Status.COMPLETED
     deny_message = 'Only active campaigns can be completed.'
 
+
+# ---------------------------------------------------------------------------
 # Admin
+# ---------------------------------------------------------------------------
+
 class AdminCampaignStatusUpdateView(APIView):
     permission_classes = [IsAdminUser]
 
     def patch(self, request, pk):
-        try:
-            campaign = Campaign.objects.get(pk=pk)
-        except Campaign.DoesNotExist:
-            return campaign_not_found()
+        campaign, error = get_campaign(pk=pk)
+        if error:
+            return error
 
         serializer = AdminCampaignStatusSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -437,54 +528,53 @@ class AdminCampaignStatusUpdateView(APIView):
         campaign.status = new_status
         campaign.save(update_fields=['status', 'updated_at'])
 
-        # Re-fetch with totals for serialization.
-        campaign = (
-            Campaign.objects
-            .with_donation_totals()
-            .get(pk=campaign.pk)
-        )
-
         return success_response(
-            data=CampaignDetailSerializer(campaign).data
+            data=serialize_campaign_with_totals(campaign)
         )
 
+
+# ---------------------------------------------------------------------------
 # Donations / Payments
+# ---------------------------------------------------------------------------
+
 class CreateDonationView(APIView):
+    """Web flow: create PENDING donation + initialize Chapa checkout."""
+
     def post(self, request, pk):
-        try:
-            campaign = Campaign.objects.get(
-                pk=pk,
-                status=Campaign.Status.ACTIVE,
-            )
-        except Campaign.DoesNotExist:
+        campaign, error = get_campaign(
+            pk=pk,
+            statuses=[Campaign.Status.ACTIVE],
+        )
+        if error:
             return error_response(
-                'Campaign not found or is not active or completed.',
+                'Campaign not found or is not active.',
                 status.HTTP_404_NOT_FOUND,
             )
 
-        serializer = DonationCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        donation = create_pending_donation(
+            campaign, DonationCreateSerializer, request.data
+        )
 
-        tx_ref = f'CAMP-{campaign.id}-{uuid.uuid4()}'
+        # Cancel any older PENDING donations from the same email on this campaign.
+        #Donation.objects.filter(
+        #    campaign=campaign,
+        #    email=donation.email,
+        #    status=Donation.Status.PENDING,
+        #).exclude(pk=donation.pk).update(status=Donation.Status.FAILED)
 
-        donation = serializer.save(
-            campaign=campaign,
-            status=Donation.Status.PENDING,
-            tx_ref=tx_ref,
+        return_url = (
+            f"{settings.CHAPA_RETURN_URL.rstrip('/')}"
+            f"/api/v1/payments/return/?tx_ref={donation.tx_ref}"
         )
 
         payment_service = ChapaPaymentService()
-
         response = payment_service.initialize_payment(
             tx_ref=donation.tx_ref,
             amount=donation.amount,
             email=donation.email,
             first_name=donation.name,
             last_name='',
-            return_url=(
-                f"{settings.CHAPA_RETURN_URL.rstrip('/')}"
-                f"/api/v1/payments/return?tx_ref={donation.tx_ref}"
-            ),
+            return_url=return_url,
             customization={
                 'title': campaign.title[:15],
                 'description': 'Donation',
@@ -494,10 +584,7 @@ class CreateDonationView(APIView):
         def fail_initialization(message):
             donation.status = Donation.Status.FAILED
             donation.save(update_fields=['status'])
-            return error_response(
-                message,
-                status.HTTP_400_BAD_REQUEST,
-            )
+            return error_response(message, status.HTTP_400_BAD_REQUEST)
 
         if not response or response.get('status') != 'success':
             return fail_initialization(
@@ -512,6 +599,10 @@ class CreateDonationView(APIView):
                 'Chapa did not return a checkout URL.'
             )
 
+        donation.checkout_link = checkout_url
+        donation.return_url = return_url
+        donation.save(update_fields=['checkout_link', 'return_url'])
+
         return success_response(
             data={
                 'donation_id': donation.id,
@@ -523,64 +614,246 @@ class CreateDonationView(APIView):
             http_status=status.HTTP_201_CREATED,
         )
 
-class PaymentReturnView(APIView):
-    def get(self, request):
-        tx_ref = request.query_params.get('tx_ref')
-        if not tx_ref:
+
+class CreateMobileDonationView(APIView):
+    """Mobile SDK flow: create PENDING donation only (no server-side init)."""
+
+    def post(self, request, pk):
+        campaign, error = get_campaign(
+            pk=pk,
+            statuses=[Campaign.Status.ACTIVE],
+        )
+        if error:
             return error_response(
-                'Transaction reference is missing.',
-                status.HTTP_400_BAD_REQUEST,
+                'Campaign not found or is not active.',
+                status.HTTP_404_NOT_FOUND,
             )
 
+        donation = create_pending_donation(
+            campaign, MobileDonationCreateSerializer, request.data
+        )
+
+        return success_response(
+            data={
+                'donation_id': donation.id,
+                'campaign_id': campaign.id,
+                'tx_ref': donation.tx_ref,
+                'amount': str(donation.amount),
+                'currency': CURRENCY,
+                'campaign_title': campaign.title,
+                'status': donation.status,
+            },
+            http_status=status.HTTP_201_CREATED,
+        )
+
+
+class PaymentReturnView(APIView):
+    """Browser return URL after Chapa checkout."""
+
+    def get(self, request):
+        tx_ref = request.query_params.get('tx_ref')
+
+        if not tx_ref:
+            return payment_result_page(
+                title='Payment Error',
+                message='Transaction reference is missing.',
+                status_text='ERROR',
+            )
+
+        donation = find_donation_by_tx_ref(tx_ref)
+        if donation is None:
+            return payment_result_page(
+                title='Payment Error',
+                message='Donation not found.',
+                status_text='ERROR',
+            )
+
+        # Already verified – don't call Chapa again.
+        if donation.status == Donation.Status.SUCCESS:
+            return payment_result_page(
+                title='Payment Successful',
+                message='Your donation was successfully processed.',
+                status_text='SUCCESS',
+            )
+
+        result = process_payment_verification(donation)
+
+        if result.get('error_response') is not None:
+            return payment_result_page(
+                title='Payment Error',
+                message='Unable to verify your payment.',
+                status_text='ERROR',
+            )
+
+        outcome = result['outcome']
+
+        if outcome in (OUTCOME_SUCCESS, OUTCOME_ALREADY_SUCCESS):
+            return payment_result_page(
+                title='Payment Successful',
+                message='Your donation was successfully processed.',
+                status_text='SUCCESS',
+            )
+
+        if outcome in (OUTCOME_FAILED, OUTCOME_ALREADY_FAILED):
+            return payment_result_page(
+                title='Payment Failed',
+                message='Your payment was not completed.',
+                status_text='FAILED',
+            )
+
+        return payment_result_page(
+            title='Payment Pending',
+            message='Your payment status could not be confirmed yet.',
+            status_text='PENDING',
+        )
+
+
+def payment_result_page(title, message, status_text):
+    title = escape(title)
+    message = escape(message)
+    status_text = escape(status_text)
+    status_class = status_text.lower()
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="payment-status" content="{status_text}">
+        <title>{title}</title>
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 24px;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                background: #f5f7fa;
+                color: #1f2937;
+            }}
+            .payment-result {{
+                width: 100%;
+                max-width: 420px;
+                padding: 32px 24px;
+                text-align: center;
+                background: #ffffff;
+                border-radius: 16px;
+                box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+            }}
+            .icon {{
+                width: 64px;
+                height: 64px;
+                margin: 0 auto 20px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 50%;
+                font-size: 30px;
+                font-weight: 700;
+            }}
+            .icon.success {{ background: #dcfce7; color: #166534; }}
+            .icon.failed  {{ background: #fee2e2; color: #991b1b; }}
+            .icon.pending,
+            .icon.error   {{ background: #fef3c7; color: #92400e; }}
+            h1 {{ margin: 0 0 12px; font-size: 24px; }}
+            p  {{ margin: 0; line-height: 1.6; color: #6b7280; }}
+            .status {{
+                margin-top: 20px;
+                font-size: 13px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.08em;
+            }}
+            .status.success {{ color: #166534; }}
+            .status.failed  {{ color: #991b1b; }}
+            .status.pending,
+            .status.error   {{ color: #92400e; }}
+        </style>
+    </head>
+    <body>
+        <main class="payment-result" data-payment-status="{status_text}">
+            <div class="icon {status_class}">
+                {"✓" if status_text == "SUCCESS" else "!"}
+            </div>
+            <h1>{title}</h1>
+            <p>{message}</p>
+            <div class="status {status_class}">{status_text}</div>
+        </main>
+    </body>
+    </html>
+    """
+    return HttpResponse(html, content_type='text/html', status=200)
+
+
+class DonationVerifyView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    VERIFY_COOLDOWN_SECONDS = 20
+
+    def get(self, request, tx_ref):
+        donation = find_donation_by_tx_ref(tx_ref)
+        if donation is None:
+            return error_response('Donation not found.', status.HTTP_404_NOT_FOUND)
+
+        # Terminal – nothing to do.
+        if donation.status in (
+            Donation.Status.SUCCESS,
+            Donation.Status.FAILED,
+        ):
+            return success_response(
+                data={'tx_ref': donation.tx_ref, 'status': donation.status}
+            )
+
+        # Cooldown – avoid hammering Chapa.
+        cache_key = f'chapa_verify:{tx_ref}'
+        if cache.get(cache_key):
+            return success_response(
+                data={'tx_ref': donation.tx_ref, 'status': donation.status}
+            )
+
+        cache.set(cache_key, True, self.VERIFY_COOLDOWN_SECONDS)
+
+        result = process_payment_verification(donation)
+        if result.get('error_response') is not None:
+            return success_response(
+                data={'tx_ref': donation.tx_ref, 'status': donation.status}
+            )
+
+        return handle_payment_outcome(
+            result['outcome'],
+            result['donation'],
+            result.get('chapa_data'),
+        )
+
+
+class DonationStatusView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request, tx_ref):
         donation = find_donation_by_tx_ref(tx_ref)
         if donation is None:
             return error_response(
                 'Donation not found.',
                 status.HTTP_404_NOT_FOUND,
             )
-
-        # Already verified - don't call Chapa again.
-        if donation.status == Donation.Status.SUCCESS:
-            return success_response(
-                message='Payment has already been verified.',
-                data=donation_payload(donation),
-            )
-
-        result = process_payment_verification(donation)
-        if result['error_response'] is not None:
-            return result['error_response']
-
-        donation = result['donation']
-        chapa_data = result['chapa_data']
-        outcome = result['outcome']
-
-        if outcome in (OUTCOME_SUCCESS, OUTCOME_ALREADY_SUCCESS):
-            return success_response(
-                message='Payment verified successfully.',
-                data=donation_payload(
-                    donation,
-                    amount=chapa_data.get('amount'),
-                    currency=chapa_data.get('currency'),
-                ),
-            )
-
-        if outcome in (OUTCOME_FAILED, OUTCOME_ALREADY_FAILED):
-            return error_response(
-                'Payment failed.',
-                status.HTTP_200_OK,
-                data=donation_payload(donation),
-            )
-
-        return error_response(
-            'Payment verification returned an unexpected status.',
-            status.HTTP_502_BAD_GATEWAY,
-            data=donation_payload(
-                donation,
-                chapa_status=result['chapa_status'],
-            ),
+        return success_response(
+            data={
+                'tx_ref': donation.tx_ref,
+                'status': donation.status,
+            }
         )
 
+
+# ---------------------------------------------------------------------------
 # Chapa webhook
+# ---------------------------------------------------------------------------
+
 def _hmac_sha256(key_bytes, msg_bytes):
     return hmac.new(key_bytes, msg_bytes, hashlib.sha256).hexdigest()
 
@@ -604,6 +877,7 @@ def chapa_signature_valid(raw_body, headers):
     )
     return bool(body_valid or secret_valid)
 
+
 class ChapaWebhookView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -611,14 +885,12 @@ class ChapaWebhookView(APIView):
     def post(self, request):
         raw_body = request.body
 
-        #  Verify webhook signature
         if not chapa_signature_valid(raw_body, request.headers):
             return error_response(
                 'Invalid webhook signature.',
                 status.HTTP_401_UNAUTHORIZED,
             )
 
-        #  Parse payload
         try:
             payload = json.loads(raw_body.decode('utf-8'))
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -627,9 +899,8 @@ class ChapaWebhookView(APIView):
                 status.HTTP_400_BAD_REQUEST,
             )
 
-        print('CHAPA WEBHOOK:', payload)
+        logger.info('CHAPA WEBHOOK: %s', payload)
 
-        # Locate our donation
         tx_ref = payload.get('tx_ref')
         if not tx_ref:
             return error_response(
@@ -644,98 +915,72 @@ class ChapaWebhookView(APIView):
                 status.HTTP_404_NOT_FOUND,
             )
 
-        # Verify + validate + settle (never trust the webhook alone)
+        # Always verify with Chapa – never trust the webhook body alone.
         result = process_payment_verification(donation)
-        if result['error_response'] is not None:
+        if result.get('error_response') is not None:
             return result['error_response']
 
-        donation = result['donation']
-        chapa_data = result['chapa_data']
-        chapa_status = result['chapa_status']
-        outcome = result['outcome']
-
-        if outcome in (OUTCOME_SUCCESS, OUTCOME_ALREADY_SUCCESS):
-            message = (
-                'Webhook payment processed successfully.'
-                if outcome == OUTCOME_SUCCESS
-                else 'Donation already processed.'
-            )
-            return success_response(
-                message=message,
-                data=donation_payload(
-                    donation,
-                    currency=chapa_data.get('currency'),
-                ),
-            )
-
-        if outcome == OUTCOME_FAILED:
-            return error_response(
-                'Payment failed.',
-                status.HTTP_200_OK,
-                data=donation_payload(
-                    donation,
-                    currency=chapa_data.get('currency'),
-                ),
-            )
-
-        if outcome == OUTCOME_ALREADY_FAILED:
-            return error_response(
-                'Donation already marked as failed.',
-                status.HTTP_200_OK,
-                data=donation_payload(donation),
-            )
-
-        # Unexpected status
-        return error_response(
-            'Unexpected payment status.',
-            status.HTTP_502_BAD_GATEWAY,
-            data={
-                'donation_id': donation.id,
-                'tx_ref': donation.tx_ref,
-                'chapa_status': chapa_status,
-            },
+        return handle_payment_outcome(
+            result['outcome'],
+            result['donation'],
+            result.get('chapa_data'),
+            for_webhook=True,
         )
-        
+
+
+# ---------------------------------------------------------------------------
+# Donation list views
+# ---------------------------------------------------------------------------
+
 class DonationPagination(PageNumberPagination):
     page_size = 20
 
-class MyCampaignDonationsListView(generics.ListAPIView):
-    """Donations for one campaign.
 
-    - Owner:    only their own campaign, only SUCCESS donations.
-                ?status= may only be SUCCESS (or omitted).
-    - Admin:    any campaign, all statuses, ?status= freely filterable.
-    """
-    serializer_class = OwnerDonationListSerializer
-    permission_classes = [IsActiveUser]
+class BaseCampaignDonationsListView(generics.ListAPIView):
+    """Shared base for campaign donation listings."""
     pagination_class = DonationPagination
 
-    def get_queryset(self):
-        user = self.request.user
-        is_admin = user.is_staff or user.is_superuser
+    def get_campaign(self):
+        raise NotImplementedError
 
-        if is_admin:
-            campaign = Campaign.objects.filter(
-                pk=self.kwargs['pk']
-            ).first()
-        else:
-            campaign = Campaign.objects.filter(
-                pk=self.kwargs['pk'],
-                owner=user,
-            ).first()
-
-        if campaign is None:
-            raise NotFound('Campaign not found.')
-
-        queryset = (
+    def get_base_queryset(self, campaign):
+        return (
             Donation.objects
             .filter(campaign=campaign)
             .order_by('-created_at')
         )
 
-        params = DonationFilterSerializer(
-            data=self.request.query_params
-        )
+
+class MyCampaignDonationsListView(BaseCampaignDonationsListView):
+    """
+    Donations for one campaign.
+
+    - Owner: only their own campaign, only SUCCESS donations.
+             ?status= may only be SUCCESS (or omitted).
+    - Admin: any campaign, all statuses, ?status= freely filterable.
+    """
+    serializer_class = OwnerDonationListSerializer
+    permission_classes = [IsActiveUser]
+
+    def get_campaign(self):
+        user = self.request.user
+        is_admin = user.is_staff or user.is_superuser
+
+        if is_admin:
+            campaign, _ = get_campaign(pk=self.kwargs['pk'], as_exception=True)
+        else:
+            campaign, _ = get_campaign(
+                pk=self.kwargs['pk'],
+                owner=user,
+                as_exception=True,
+            )
+        return campaign, is_admin
+
+    def get_queryset(self):
+        campaign, is_admin = self.get_campaign()
+        queryset = self.get_base_queryset(campaign)
+
+        params = DonationFilterSerializer(data=self.request.query_params)
         params.is_valid(raise_exception=True)
         status_filter = params.validated_data.get('status')
 
@@ -750,34 +995,30 @@ class MyCampaignDonationsListView(generics.ListAPIView):
             )
         return queryset.filter(status=Donation.Status.SUCCESS)
 
-class CampaignPublicDonationsListView(generics.ListAPIView):
-    """Public list of SUCCESSFUL donations for a campaign.
-    anyone can see who gave and how much, but only completed/success donations. Pending and failed payments
-    are never exposed.
+
+class CampaignPublicDonationsListView(BaseCampaignDonationsListView):
+    """
+    Public list of SUCCESSFUL donations for a campaign.
+    Pending and failed payments are never exposed.
     """
     serializer_class = PublicDonationListSerializer
     permission_classes = []
-    authentication_classes = []  # don't even try to authenticate
-    pagination_class = DonationPagination
+    authentication_classes = []
 
-    def get_queryset(self):
-        # Only publicly visible campaigns
-        campaign = Campaign.objects.filter(
+    def get_campaign(self):
+        campaign, _ = get_campaign(
             pk=self.kwargs['pk'],
-            status__in=[
+            statuses=[
                 Campaign.Status.ACTIVE,
                 Campaign.Status.COMPLETED,
             ],
-        ).first()
+            as_exception=True,
+        )
+        return campaign
 
-        if campaign is None:
-            raise NotFound('Campaign not found.')
-
+    def get_queryset(self):
+        campaign = self.get_campaign()
         return (
-            Donation.objects
-            .filter(
-                campaign=campaign,
-                status=Donation.Status.SUCCESS,
-            )
-            .order_by('-created_at')
+            self.get_base_queryset(campaign)
+            .filter(status=Donation.Status.SUCCESS)
         )

@@ -21,6 +21,7 @@ load_dotenv()
 CHAPA_SECRET_KEY = os.getenv('CHAPA_SECRET_KEY')
 CHAPA_RETURN_URL = os.getenv('CHAPA_RETURN_URL')
 CHAPA_WEBHOOK_SECRET = os.getenv('CHAPA_WEBHOOK_SECRET')
+BACKEND_URL = os.getenv('BACKEND_URL')
 
 if not CHAPA_SECRET_KEY:
     raise RuntimeError(
@@ -32,6 +33,9 @@ if not CHAPA_RETURN_URL:
         'CHAPA_RETURN_URL is not configured.'
     )
     
+if not BACKEND_URL:
+    raise RuntimeError('BACKEND_URL is not configured.')
+
 
 if not CHAPA_WEBHOOK_SECRET:
     raise RuntimeError(
@@ -54,7 +58,7 @@ DEBUG = True
 ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
-    'scenes-slope-paris-select.trycloudflare.com',
+    'annually-fork-junior-directly.trycloudflare.com',
     '10.0.2.2'
 ]
 
@@ -93,6 +97,13 @@ SIMPLE_JWT = {
     'BLACKLIST_AFTER_ROTATION': True,
 }
 
+# settings.py
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': 'redis://127.0.0.1:6379/1',
+    }
+}
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

@@ -141,10 +141,32 @@ class Donation(models.Model):
         decimal_places=2,
         validators=[MinValueValidator(Decimal('1.00'))]
     )
+    phone = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True,
+        help_text='Optional. Captured from mobile SDK donations for audit.',
+    )
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
         default=Status.PENDING
     )
     tx_ref = models.CharField(max_length=100, unique=True)
+
+    checkout_link = models.URLField(
+        max_length=500,
+        blank=True,
+        null=True,
+        help_text='Chapa checkout URL used for this payment.',
+    )
+
+    return_url = models.URLField(
+        max_length=500,
+        blank=True,
+        null=True,
+        help_text='Return URL we sent to Chapa — for audit and debugging.',
+    )
+    
     created_at = models.DateTimeField(auto_now_add=True)
+    

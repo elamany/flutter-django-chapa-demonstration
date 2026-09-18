@@ -32,8 +32,6 @@ class _RootRouter extends StatelessWidget {
           AuthInitial() || AuthLoading() => const _SplashScreen(),
           AuthAuthenticated() || AuthUnauthenticated() => const MainScaffold(),
           AuthInactive() => const InactiveScreen(),
-          // AuthFailure comes from a login attempt on the pushed LoginScreen.
-          // Show MainScaffold underneath; the LoginScreen handles the error.
           AuthFailure() => const MainScaffold(),
         };
       },

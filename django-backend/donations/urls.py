@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     CampaignListView,
     CampaignDetailView,
+    DonationStatusView,
     MyCampaignListView,
     MyCampaignDetailView,
     SubmitCampaignForReviewView,
@@ -12,8 +13,10 @@ from .views import (
     
     
     CreateDonationView,
+    CreateMobileDonationView,
     PaymentReturnView,
     ChapaWebhookView,
+    DonationVerifyView,
     
     MyCampaignDonationsListView,
     CampaignPublicDonationsListView
@@ -74,6 +77,18 @@ urlpatterns = [
     ),
     
     path(
+        'payments/verify/<str:tx_ref>/',
+        DonationVerifyView.as_view(),
+        name='donation-verify',
+    ),
+    
+    path(
+        'payments/status/<str:tx_ref>/',
+        DonationStatusView.as_view(),
+        name='donation-status',
+    ),
+    
+    path(
         'payments/webhook/',
         ChapaWebhookView.as_view(),
         name='chapa-webhook'
@@ -89,5 +104,11 @@ urlpatterns = [
         'campaigns/<int:pk>/donations/',
         CampaignPublicDonationsListView.as_view(),
         name='campaign-public-donations'
+    ),
+    
+    path(
+        'campaigns/<int:pk>/donate/mobile/',
+        CreateMobileDonationView.as_view(),
+        name='create-mobile-donation',
     ),
 ]

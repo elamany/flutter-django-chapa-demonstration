@@ -1,23 +1,34 @@
 from rest_framework import serializers
 
+from django.conf import settings
+
 from .models import Campaign, Donation
+
 from .image_utils import process_image
+
 from decimal import Decimal
 
 
 def _progress_percent(campaign):
+
     target = campaign.target_amount or Decimal('0.00')
+
     if not target:
         return 0.0
+
     raised = getattr(campaign, 'raised_amount', None) or Decimal('0.00')
+
     percent = float(raised / target * 100)
+
     return round(min(percent, 100.0), 2)
 
 
-#POST /campaigns/, PATCH /my-campaigns/<id>/
+# POST /campaigns/, PATCH /my-campaigns/<id>/
 class CampaignSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = Campaign
+
         fields = [
             'id',
             'title',
@@ -28,36 +39,59 @@ class CampaignSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
+
         read_only_fields = [
             'id',
             'status',
             'created_at',
         ]
-        
+
     def validate_image(self, value):
+
         try:
             processed_image = process_image(value)
+
         except ValueError as error:
             raise serializers.ValidationError(str(error))
 
         return processed_image
 
-#Small list response GET /campaigns/, GET /my-campaigns/
+
+# Small list response GET /campaigns/, GET /my-campaigns/
 class CampaignListSerializer(serializers.ModelSerializer):
-    owner_id = serializers.IntegerField(source='owner.id', read_only=True)
-    owner_first_name = serializers.CharField(source='owner.first_name', read_only=True)
-    owner_last_name = serializers.CharField(source='owner.last_name', read_only=True)
+
+    image = serializers.SerializerMethodField()
+
+    owner_id = serializers.IntegerField(
+        source='owner.id',
+        read_only=True
+    )
+
+    owner_first_name = serializers.CharField(
+        source='owner.first_name',
+        read_only=True
+    )
+
+    owner_last_name = serializers.CharField(
+        source='owner.last_name',
+        read_only=True
+    )
 
     raised_amount = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
         read_only=True,
     )
-    donation_count = serializers.IntegerField(read_only=True)
+
+    donation_count = serializers.IntegerField(
+        read_only=True
+    )
+
     progress_percent = serializers.SerializerMethodField()
 
     class Meta:
         model = Campaign
+
         fields = [
             'id',
             'title',
@@ -72,25 +106,46 @@ class CampaignListSerializer(serializers.ModelSerializer):
             'owner_first_name',
             'owner_last_name',
         ]
+
         read_only_fields = fields
 
     def get_progress_percent(self, campaign):
+
         return _progress_percent(campaign)
 
-#Full detail response GET /campaigns/<id>/, GET /my-campaigns/<id>/
+    def get_image(self, campaign):
+
+        if not campaign.image:
+            return None
+
+        return (
+            f"{settings.BACKEND_URL.rstrip('/')}"
+            f"{campaign.image.url}"
+        )
+
+
+# Full detail response
+# GET /campaigns/<id>/
+# GET /my-campaigns/<id>/
 class CampaignDetailSerializer(serializers.ModelSerializer):
+
+    image = serializers.SerializerMethodField()
+
     owner_id = serializers.IntegerField(
         source='owner.id',
         read_only=True
     )
+
     owner_first_name = serializers.CharField(
         source='owner.first_name',
         read_only=True
     )
+
     owner_last_name = serializers.CharField(
         source='owner.last_name',
         read_only=True
     )
+
     owner_username = serializers.CharField(
         source='owner.username',
         read_only=True
@@ -101,11 +156,16 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
         decimal_places=2,
         read_only=True,
     )
-    donation_count = serializers.IntegerField(read_only=True)
+
+    donation_count = serializers.IntegerField(
+        read_only=True
+    )
+
     progress_percent = serializers.SerializerMethodField()
 
     class Meta:
         model = Campaign
+
         fields = [
             'id',
             'title',
@@ -123,16 +183,32 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
             'donation_count',
             'progress_percent',
         ]
+
         read_only_fields = fields
 
     def get_progress_percent(self, campaign):
+
         return _progress_percent(campaign)
 
-#Validate query parameters GET /campaigns/?status=[valid stats]
+    def get_image(self, campaign):
+
+        if not campaign.image:
+            return None
+
+        return (
+            f"{settings.BACKEND_URL.rstrip('/')}"
+            f"{campaign.image.url}"
+        )
+
+
+# Validate query parameters
+# GET /campaigns/?status=[valid status]
 class CampaignFilterSerializer(serializers.Serializer):
+
     status = serializers.CharField(required=False)
 
     def validate_status(self, value):
+
         value = value.upper()
 
         valid_statuses = {
@@ -141,17 +217,20 @@ class CampaignFilterSerializer(serializers.Serializer):
         }
 
         if value not in valid_statuses:
+
             raise serializers.ValidationError(
                 "Invalid campaign status."
             )
 
         return value
-    
+
 
 class AdminCampaignStatusSerializer(serializers.Serializer):
+
     status = serializers.CharField()
 
     def validate_status(self, value):
+
         value = value.upper()
 
         valid_statuses = {
@@ -160,17 +239,20 @@ class AdminCampaignStatusSerializer(serializers.Serializer):
         }
 
         if value not in valid_statuses:
+
             raise serializers.ValidationError(
                 "Invalid campaign status."
             )
 
         return value
-    
 
-#donation
+
+# Donation
 class DonationCreateSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = Donation
+
         fields = [
             'name',
             'email',
@@ -179,27 +261,69 @@ class DonationCreateSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs):
+
         if attrs.get('is_anonymous'):
             attrs['name'] = 'Anonymous'
 
         return attrs
 
     def validate_email(self, value):
+
         return value.strip().lower()
 
     def validate_amount(self, value):
+
         if value < 1:
+
             raise serializers.ValidationError(
                 'Donation amount must be greater than one.'
             )
 
         return value
-    
-    
-#Owner view GET /my-campaigns/<pk>/donations/
+
+
+# Mobile SDK donation
+# POST /campaigns/<pk>/donate/mobile/
+class MobileDonationCreateSerializer(DonationCreateSerializer):
+
+    """
+    Same as DonationCreateSerializer but requires a phone number.
+    """
+
+    phone = serializers.CharField(max_length=20)
+
+    class Meta(DonationCreateSerializer.Meta):
+
+        fields = DonationCreateSerializer.Meta.fields + [
+            'phone'
+        ]
+
+    def validate_phone(self, value):
+
+        # Chapa accepts Ethiopian formats:
+        # 09XXXXXXXX, 07XXXXXXXX
+        # +2519XXXXXXXX, +2517XXXXXXXX
+
+        cleaned = value.strip().replace(' ', '')
+
+        digits = cleaned.lstrip('+')
+
+        if not digits.isdigit() or len(digits) < 10:
+
+            raise serializers.ValidationError(
+                'Enter a valid phone number (e.g. 0911223344).'
+            )
+
+        return cleaned
+
+
+# Owner view
+# GET /my-campaigns/<pk>/donations/
 class OwnerDonationListSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = Donation
+
         fields = [
             'id',
             'name',
@@ -210,16 +334,21 @@ class OwnerDonationListSerializer(serializers.ModelSerializer):
             'tx_ref',
             'created_at',
         ]
+
         read_only_fields = fields
 
 
-#Public view GET /campaigns/<pk>/donations/
+# Public view
+# GET /campaigns/<pk>/donations/
 class PublicDonationListSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = Donation
+
         # Deliberately NO email, NO tx_ref, NO status.
         # Public visitors only see successful donations and never
         # a donor's contact info or internal payment reference.
+
         fields = [
             'id',
             'name',
@@ -227,13 +356,18 @@ class PublicDonationListSerializer(serializers.ModelSerializer):
             'is_anonymous',
             'created_at',
         ]
+
         read_only_fields = fields
-        
-#Validate query parameters GET /my-campaigns/<pk>/donations/?status=[valid status]
+
+
+# Validate query parameters
+# GET /my-campaigns/<pk>/donations/?status=[valid status]
 class DonationFilterSerializer(serializers.Serializer):
+
     status = serializers.CharField(required=False)
 
     def validate_status(self, value):
+
         value = value.upper()
 
         valid_statuses = {
@@ -242,6 +376,7 @@ class DonationFilterSerializer(serializers.Serializer):
         }
 
         if value not in valid_statuses:
+
             raise serializers.ValidationError(
                 "Invalid donation status."
             )

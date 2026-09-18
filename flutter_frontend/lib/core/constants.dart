@@ -16,3 +16,12 @@ class ApiConstants {
   static const String accessTokenKey = 'access_token';
   static const String refreshTokenKey = 'refresh_token';
 }
+
+class ChapaConstants {
+  ChapaConstants._();
+
+  /// Chapa PUBLIC key — safe to embed in the mobile app.
+  /// Get it from https://dashboard.chapa.co → Settings → API Keys.
+  /// Now i use web view so this is not needed
+  static const String publicKey = 'CHAPUBK-your public key if you use native ui for chapa';
+}
